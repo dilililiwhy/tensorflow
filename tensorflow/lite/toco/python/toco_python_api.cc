@@ -18,20 +18,17 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "tensorflow/compiler/mlir/lite/python/graphdef_to_tfl_flatbuffer.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/python/interpreter_wrapper/python_utils.h"
 #include "tensorflow/lite/toco/import_tensorflow.h"
 #include "tensorflow/lite/toco/model_flags.pb.h"
+#include "tensorflow/lite/toco/toco_convert.h"
 #include "tensorflow/lite/toco/toco_flags.pb.h"
 #include "tensorflow/lite/toco/toco_graphviz_dump_options.h"
 #include "tensorflow/lite/toco/toco_port.h"
 #include "tensorflow/lite/toco/toco_tooling.h"
 #include "tensorflow/lite/toco/toco_types.h"
-
-#if defined(TFLITE_BUILD_WITH_MLIR_CONVERTER)
-#include "tensorflow/compiler/mlir/lite/python/graphdef_to_tfl_flatbuffer.h"
-#endif
-#include "tensorflow/core/protobuf/graph_debug_info.pb.h"
 
 namespace toco {
 
@@ -120,27 +117,16 @@ PyObject* TocoConvert(PyObject* model_flags_proto_txt_raw,
 
   string output_file_contents_txt;
   tensorflow::Status status;
-  std::unique_ptr<toco::Model> model;
+  int64 arithmetic_ops_count;
 
   // Convert model.
   if (enable_mlir_converter) {
-#if defined(TFLITE_BUILD_WITH_MLIR_CONVERTER)
     status = tensorflow::ConvertGraphDefToTFLiteFlatBuffer(
         model_flags, toco_flags, debug_info, graph_def,
         &output_file_contents_txt);
-#else
-    // TODO(b/124314620): Remove this condition.
-    PyErr_SetString(PyExc_RuntimeError,
-                    "This flag is not supported by this version of the "
-                    "TFLite converter. This functionality is being "
-                    "actively worked on.");
-    return nullptr;
-#endif
   } else {
-    model = toco::Import(toco_flags, model_flags, input_contents_txt);
-    toco::Transform(toco_flags, model.get());
-    status = Export(toco_flags, *model, toco_flags.allow_custom_ops(),
-                    &output_file_contents_txt);
+    status = Convert(input_contents_txt, toco_flags, model_flags,
+                     &output_file_contents_txt, &arithmetic_ops_count);
   }
 
   if (!status.ok()) {
@@ -154,7 +140,7 @@ PyObject* TocoConvert(PyObject* model_flags_proto_txt_raw,
         ::tflite::python_utils::ConvertToPyString(
             output_file_contents_txt.data(), output_file_contents_txt.size()));
     PyDict_SetItemString(dict, "arithmetic_ops",
-                         PyLong_FromLong(model->ArithmeticOpsCount()));
+                         PyLong_FromLong(arithmetic_ops_count));
     return dict;
   }
   // Convert arguments back to byte (py3) or str (py2)
