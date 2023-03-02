@@ -18,8 +18,9 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/functional/function_ref.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/call_inliner.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
 
 namespace xla {
 class WhileUtil {
@@ -28,6 +29,10 @@ class WhileUtil {
   struct MakeInstructionsLiveInResult {
     // The new while operation that has the requested values live in.
     HloInstruction* new_while_instr;
+
+    // The new tuple instruction that replaced the original while instruction
+    // with the same shape.
+    HloInstruction* replacement_instr;
 
     // The i'th element of `while_body_live_in_values` is an instruction in the
     // while body that holds the i'th *newly added* live in value at runtime.
@@ -60,7 +65,7 @@ class WhileUtil {
       absl::Span<HloInstruction* const> instructions);
 
   using LoopStateTy = std::vector<HloInstruction*>;
-  using LoopBodyGeneratorTy = std::function<StatusOr<LoopStateTy>(
+  using LoopBodyGeneratorTy = absl::FunctionRef<StatusOr<LoopStateTy>(
       HloInstruction* /*induction_var*/,
       const LoopStateTy& /*current_values*/)>;
 
@@ -77,9 +82,21 @@ class WhileUtil {
   //    return loop_state;
   //  }
   static StatusOr<LoopStateTy> MakeCountedLoop(
-      HloComputation* computation, int32 trip_count,
-      const LoopStateTy& init_values,
-      const LoopBodyGeneratorTy& loop_body_generator,
+      HloComputation* computation, int32_t trip_count,
+      const LoopStateTy& init_values, LoopBodyGeneratorTy loop_body_generator,
+      const OpMetadata& metadata);
+
+  struct OwningLoopStateTy {
+    std::vector<std::unique_ptr<HloInstruction>> instructions_to_add;
+    WhileUtil::LoopStateTy while_results;
+  };
+  // As above but does not add the while loop or other instructions created
+  // around it in any particular computation. The caller can instead add it to a
+  // computation of their choosing.
+  static StatusOr<OwningLoopStateTy> MakeCountedLoop(
+      HloModule* module, int32_t trip_count,
+      const WhileUtil::LoopStateTy& init_values,
+      WhileUtil::LoopBodyGeneratorTy loop_body_generator,
       const OpMetadata& metadata);
 
   // Returns the GetTupleElement instructions in `while_body` that access
@@ -92,7 +109,7 @@ class WhileUtil {
   // `while_conditional` that access elements in the parameter tuple. Assumes
   // `while_conditional` is the conditional computation of the while loop in
   // question.
-  static absl::flat_hash_map<int64, absl::InlinedVector<HloInstruction*, 1>>
+  static absl::flat_hash_map<int64_t, absl::InlinedVector<HloInstruction*, 1>>
   GetGTEsMapForWhileConditional(const HloComputation& while_conditional);
 };
 }  // namespace xla

@@ -22,11 +22,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/client/lib/arithmetic.h"
 #include "tensorflow/compiler/xla/client/local_client.h"
 #include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_computation.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/compiler/xla/reference_util.h"
-#include "tensorflow/compiler/xla/service/hlo_computation.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
-#include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/test.h"
@@ -37,9 +37,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/tests/test_macros.h"
 #include "tensorflow/compiler/xla/tests/test_utils.h"
 #include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/test.h"
 
 namespace xla {
 namespace {
@@ -76,8 +74,8 @@ XLA_TEST_F(Bfloat16Test, NegateScalarF16) {
                                 error_spec_);
 }
 
-// Disabled on interpreter since BatchNormExanper is not run by default on the
-// intepreter backend.
+// Disabled on interpreter since BatchNormExpander is not run by default on the
+// interpreter backend.
 XLA_TEST_F(Bfloat16Test, DISABLED_ON_INTERPRETER(BatchNormTraining)) {
   const int kFeatureIndex = 2;
   XlaBuilder builder(TestName());
@@ -112,8 +110,8 @@ XLA_TEST_F(Bfloat16Test, DISABLED_ON_INTERPRETER(BatchNormTraining)) {
   ComputeAndCompareTuple(&builder, expected, {}, ErrorSpec(0.01, 0.02));
 }
 
-// Disabled on interpreter since BatchNormExanper is not run by default on the
-// intepreter backend.
+// Disabled on interpreter since BatchNormExpander is not run by default on the
+// interpreter backend.
 XLA_TEST_F(Bfloat16Test, DISABLED_ON_INTERPRETER(BatchNormGrad)) {
   const int kFeatureIndex = 2;
   XlaBuilder builder(TestName());

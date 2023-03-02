@@ -1,10 +1,13 @@
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
 load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
+
+# copybara:uncomment package(default_applicable_licenses = ["//tensorflow:license"])
 
 licenses(["notice"])
 
 glob_lit_tests(
     data = [":test_utilities"],
-    driver = "@local_config_mlir//:run_lit.sh",
+    driver = "@llvm-project//mlir:run_lit.sh",
     test_file_exts = ["mlir"],
 )
 
@@ -14,6 +17,7 @@ filegroup(
     testonly = True,
     data = [
         "//tensorflow/compiler/mlir:tf-mlir-translate",
-        "@llvm//:FileCheck",
+        "@llvm-project//llvm:FileCheck",
+        "@llvm-project//llvm:not",
     ],
 )

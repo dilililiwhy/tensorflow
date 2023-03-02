@@ -19,10 +19,6 @@ limitations under the License.
 #ifdef HANDLE_TF_TYPE
 
 //             class, enumerant, name
-HANDLE_TF_TYPE(Uint8, UINT8, "uint8")
-HANDLE_TF_TYPE(Uint16, UINT16, "uint16")
-HANDLE_TF_TYPE(Uint32, UINT32, "uint32")
-HANDLE_TF_TYPE(Uint64, UINT64, "uint64")
 HANDLE_TF_TYPE(Qint8, QINT8, "qint8")
 HANDLE_TF_TYPE(Qint16, QINT16, "qint16")
 HANDLE_TF_TYPE(Qint32, QINT32, "qint32")
@@ -68,6 +64,8 @@ HANDLE_TF_REF_TYPE(Complex64Ref, COMPLEX64_REF, "complex64ref")
 HANDLE_TF_REF_TYPE(Complex128Ref, COMPLEX128_REF, "complex128ref")
 HANDLE_TF_REF_TYPE(HalfRef, HALF_REF, "halfref")
 HANDLE_TF_REF_TYPE(ResourceRef, RESOURCE_REF, "resourceref")
+HANDLE_TF_REF_TYPE(Float8E4M3FNRef, FLOAT8_E4M3FN_REF, "float8e4m3fnref")
+HANDLE_TF_REF_TYPE(Float8E5M2Ref, FLOAT8_E5M2_REF, "float8e5m2ref")
 
 #ifndef HANDLE_LAST_TF_TYPE
 #define HANDLE_LAST_TF_TYPE(class, enumerant, name) \

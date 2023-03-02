@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_slice.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/util/padding.h"
 #include "tensorflow/core/util/tensor_format.h"
 
@@ -44,17 +45,17 @@ class ConvOp : public XlaOpKernel {
   explicit ConvOp(OpKernelConstruction* ctx, int num_spatial_dims,
                   bool depthwise)
       : XlaOpKernel(ctx) {
-    xla::StatusOr<ConvOpAttrs> attrs =
+    StatusOr<ConvOpAttrs> attrs =
         ConvOpAttrs::Create(num_spatial_dims, depthwise, ctx);
     OP_REQUIRES_OK(ctx, attrs.status());
-    attrs_ = attrs.ValueOrDie();
+    attrs_ = attrs.value();
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
-    xla::StatusOr<xla::XlaOp> conv = MakeXlaForwardConvOp(
+    StatusOr<xla::XlaOp> conv = MakeXlaForwardConvOp(
         ctx->op_kernel().type_string(), ctx->Input(0), ctx->Input(1), attrs_);
     OP_REQUIRES_OK(ctx, conv.status());
-    ctx->SetOutput(0, conv.ValueOrDie());
+    ctx->SetOutput(0, conv.value());
   }
 
  protected:
@@ -69,21 +70,21 @@ class Conv2DOp : public ConvOp {
   explicit Conv2DOp(OpKernelConstruction* ctx)
       : ConvOp(ctx, /*num_spatial_dims=*/2, /*depthwise=*/false) {}
 };
-REGISTER_XLA_OP(Name("Conv2D"), Conv2DOp);
+REGISTER_XLA_CONV_OP(Name("Conv2D"), Conv2DOp);
 
 class Conv3DOp : public ConvOp {
  public:
   explicit Conv3DOp(OpKernelConstruction* ctx)
       : ConvOp(ctx, /*num_spatial_dims=*/3, /*depthwise=*/false) {}
 };
-REGISTER_XLA_OP(Name("Conv3D"), Conv3DOp);
+REGISTER_XLA_CONV_OP(Name("Conv3D"), Conv3DOp);
 
 class DepthwiseConv2DOp : public ConvOp {
  public:
   explicit DepthwiseConv2DOp(OpKernelConstruction* ctx)
       : ConvOp(ctx, /*num_spatial_dims=*/2, /*depthwise=*/true) {}
 };
-REGISTER_XLA_OP(Name("DepthwiseConv2dNative"), DepthwiseConv2DOp);
+REGISTER_XLA_CONV_OP(Name("DepthwiseConv2dNative"), DepthwiseConv2DOp);
 
 // Backprop for input.
 class ConvBackpropInputOp : public XlaOpKernel {
@@ -91,23 +92,30 @@ class ConvBackpropInputOp : public XlaOpKernel {
   explicit ConvBackpropInputOp(OpKernelConstruction* ctx, int num_spatial_dims,
                                bool depthwise)
       : XlaOpKernel(ctx) {
-    xla::StatusOr<ConvOpAttrs> attrs =
+    StatusOr<ConvOpAttrs> attrs =
         ConvOpAttrs::Create(num_spatial_dims, depthwise, ctx);
     OP_REQUIRES_OK(ctx, attrs.status());
-    attrs_ = attrs.ValueOrDie();
+    attrs_ = attrs.value();
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
     TensorShape input_tensor_shape;
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsShape(0, &input_tensor_shape));
+    OP_REQUIRES_OK(
+        ctx, ctx->ConstantInputAsShape(0, &input_tensor_shape,
+                                       xla::ValueInferenceMode::kUpperBound));
     xla::Shape input_shape =
         TensorShapeToXLAShape(ctx->input_xla_type(1), input_tensor_shape);
-
-    xla::StatusOr<xla::XlaOp> in_backprop =
-        MakeXlaBackpropInputConvOp(ctx->op_kernel().type_string(), input_shape,
-                                   ctx->Input(1), ctx->Input(2), attrs_);
+    OP_REQUIRES(ctx, input_shape.rank() == attrs_.num_spatial_dims + 2,
+                errors::InvalidArgument(
+                    "The rank of the specified input shape must be "
+                    "num_spatial_dims + 2. Expected ",
+                    attrs_.num_spatial_dims + 2, " got ", input_shape.rank()));
+    xla::XlaOp input_sizes = ctx->Input(0);
+    StatusOr<xla::XlaOp> in_backprop = MakeXlaBackpropInputConvOp(
+        ctx->op_kernel().type_string(), input_shape, ctx->Input(1),
+        ctx->Input(2), attrs_, nullptr, &input_sizes);
     OP_REQUIRES_OK(ctx, in_backprop.status());
-    ctx->SetOutput(0, in_backprop.ValueOrDie());
+    ctx->SetOutput(0, in_backprop.value());
   }
 
  protected:
@@ -122,7 +130,7 @@ class Conv2DBackpropInputOp : public ConvBackpropInputOp {
   explicit Conv2DBackpropInputOp(OpKernelConstruction* ctx)
       : ConvBackpropInputOp(ctx, /*num_spatial_dims=*/2, /*depthwise=*/false) {}
 };
-REGISTER_XLA_OP(
+REGISTER_XLA_CONV_OP(
     Name("Conv2DBackpropInput").CompileTimeConstantInput("input_sizes"),
     Conv2DBackpropInputOp);
 
@@ -131,7 +139,7 @@ class Conv3DBackpropInputOp : public ConvBackpropInputOp {
   explicit Conv3DBackpropInputOp(OpKernelConstruction* ctx)
       : ConvBackpropInputOp(ctx, /*num_spatial_dims=*/3, /*depthwise=*/false) {}
 };
-REGISTER_XLA_OP(
+REGISTER_XLA_CONV_OP(
     Name("Conv3DBackpropInputV2").CompileTimeConstantInput("input_sizes"),
     Conv3DBackpropInputOp);
 
@@ -140,32 +148,34 @@ class DepthwiseConv2DBackpropInputOp : public ConvBackpropInputOp {
   explicit DepthwiseConv2DBackpropInputOp(OpKernelConstruction* ctx)
       : ConvBackpropInputOp(ctx, /*num_spatial_dims=*/2, /*depthwise=*/true) {}
 };
-REGISTER_XLA_OP(Name("DepthwiseConv2dNativeBackpropInput")
-                    .CompileTimeConstantInput("input_sizes"),
-                DepthwiseConv2DBackpropInputOp);
+REGISTER_XLA_CONV_OP(Name("DepthwiseConv2dNativeBackpropInput")
+                         .CompileTimeConstantInput("input_sizes"),
+                     DepthwiseConv2DBackpropInputOp);
 
 class ConvBackpropFilterOp : public XlaOpKernel {
  public:
   explicit ConvBackpropFilterOp(OpKernelConstruction* ctx, int num_spatial_dims,
                                 bool depthwise)
       : XlaOpKernel(ctx) {
-    xla::StatusOr<ConvOpAttrs> attrs =
+    StatusOr<ConvOpAttrs> attrs =
         ConvOpAttrs::Create(num_spatial_dims, depthwise, ctx);
     OP_REQUIRES_OK(ctx, attrs.status());
-    attrs_ = attrs.ValueOrDie();
+    attrs_ = attrs.value();
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
     TensorShape filter_tensor_shape;
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsShape(1, &filter_tensor_shape));
+    OP_REQUIRES_OK(
+        ctx, ctx->ConstantInputAsShape(1, &filter_tensor_shape,
+                                       xla::ValueInferenceMode::kUpperBound));
     xla::Shape filter_shape =
         TensorShapeToXLAShape(ctx->input_xla_type(0), filter_tensor_shape);
 
-    xla::StatusOr<xla::XlaOp> filter_backprop = MakeXlaBackpropFilterConvOp(
+    StatusOr<xla::XlaOp> filter_backprop = MakeXlaBackpropFilterConvOp(
         ctx->op_kernel().type_string(), ctx->Input(0), filter_shape,
         ctx->Input(2), attrs_);
     OP_REQUIRES_OK(ctx, filter_backprop.status());
-    ctx->SetOutput(0, filter_backprop.ValueOrDie());
+    ctx->SetOutput(0, filter_backprop.value());
   }
 
  protected:
@@ -181,7 +191,7 @@ class Conv2DBackpropFilterOp : public ConvBackpropFilterOp {
       : ConvBackpropFilterOp(ctx, /*num_spatial_dims=*/2, /*depthwise=*/false) {
   }
 };
-REGISTER_XLA_OP(
+REGISTER_XLA_CONV_OP(
     Name("Conv2DBackpropFilter").CompileTimeConstantInput("filter_sizes"),
     Conv2DBackpropFilterOp);
 
@@ -191,7 +201,7 @@ class Conv3DBackpropFilterOp : public ConvBackpropFilterOp {
       : ConvBackpropFilterOp(ctx, /*num_spatial_dims=*/3, /*depthwise=*/false) {
   }
 };
-REGISTER_XLA_OP(
+REGISTER_XLA_CONV_OP(
     Name("Conv3DBackpropFilterV2").CompileTimeConstantInput("filter_sizes"),
     Conv3DBackpropFilterOp);
 
@@ -200,9 +210,9 @@ class DepthwiseConv2DBackpropFilterOp : public ConvBackpropFilterOp {
   explicit DepthwiseConv2DBackpropFilterOp(OpKernelConstruction* ctx)
       : ConvBackpropFilterOp(ctx, /*num_spatial_dims=*/2, /*depthwise=*/true) {}
 };
-REGISTER_XLA_OP(Name("DepthwiseConv2dNativeBackpropFilter")
-                    .CompileTimeConstantInput("filter_sizes"),
-                DepthwiseConv2DBackpropFilterOp);
+REGISTER_XLA_CONV_OP(Name("DepthwiseConv2dNativeBackpropFilter")
+                         .CompileTimeConstantInput("filter_sizes"),
+                     DepthwiseConv2DBackpropFilterOp);
 
 }  // namespace
 }  // namespace tensorflow

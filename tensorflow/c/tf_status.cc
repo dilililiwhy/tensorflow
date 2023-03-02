@@ -16,27 +16,21 @@ limitations under the License.
 #include "tensorflow/c/tf_status.h"
 
 #include "tensorflow/c/tf_status_internal.h"
-#include "tensorflow/core/lib/core/status.h"
 
-using ::tensorflow::Status;
-using ::tensorflow::error::Code;
+// Trampoline implementation to redirect to TSL. Kept here for backward
+// compatibility only.
 
-TF_Status* TF_NewStatus() { return new TF_Status; }
-
-void TF_DeleteStatus(TF_Status* s) { delete s; }
-
+TF_Status* TF_NewStatus() { return TSL_NewStatus(); }
+void TF_DeleteStatus(TF_Status* s) { TSL_DeleteStatus(s); }
 void TF_SetStatus(TF_Status* s, TF_Code code, const char* msg) {
-  if (code == TF_OK) {
-    s->status = Status::OK();
-    return;
-  }
-  s->status = Status(static_cast<Code>(code), tensorflow::StringPiece(msg));
+  TSL_SetStatus(s, TSL_Code(code), msg);
 }
-
-TF_Code TF_GetCode(const TF_Status* s) {
-  return static_cast<TF_Code>(s->status.code());
+void TF_SetPayload(TF_Status* s, const char* key, const char* value) {
+  TSL_SetPayload(s, key, value);
 }
-
-const char* TF_Message(const TF_Status* s) {
-  return s->status.error_message().c_str();
+void TF_SetStatusFromIOError(TF_Status* s, int error_code,
+                             const char* context) {
+  TSL_SetStatusFromIOError(s, error_code, context);
 }
+TF_Code TF_GetCode(const TF_Status* s) { return TF_Code(TSL_GetCode(s)); }
+const char* TF_Message(const TF_Status* s) { return TSL_Message(s); }

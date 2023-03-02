@@ -15,9 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SERVICE_CPU_DOT_OP_EMITTER_INTERNAL_H_
 #define TENSORFLOW_COMPILER_XLA_SERVICE_CPU_DOT_OP_EMITTER_INTERNAL_H_
 
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
 #include "tensorflow/compiler/xla/service/cpu/target_machine_features.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
-#include "tensorflow/compiler/xla/service/hlo_module.h"
 
 // -----------------------------------------------------------------------------
 // INTERNAL HEADER.
@@ -63,7 +63,7 @@ enum class DotImplementationStrategy {
   // supported.
   kTiledLlvmIrGemv,
 
-  // The dot operation is lowered into LLVM IR that implemetns a tiled
+  // The dot operation is lowered into LLVM IR that implements a tiled
   // Matrix*Matrix operation.  No fusions are supported.  The two inputs
   // and the output have to be row major.
   kTiledLlvmIrGemm,

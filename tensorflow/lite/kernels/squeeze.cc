@@ -13,12 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <string.h>
-#include <vector>
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/kernels/internal/portable_tensor.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/kernels/op_macros.h"
 
 namespace tflite {
 namespace ops {
@@ -79,9 +79,23 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   SqueezeContext op_context(context, node);
+  if (op_context.input->type == kTfLiteString) {
+    const int input_flat_size = GetTensorShape(op_context.input).FlatSize();
+    const int output_flat_size = GetTensorShape(op_context.output).FlatSize();
+    TF_LITE_ENSURE_EQ(context, input_flat_size, output_flat_size);
+    SequentialTensorWriter<string> writer(op_context.input, op_context.output);
+    for (int i = 0; i < input_flat_size; i++) {
+      writer.Write(i);
+    }
+    return kTfLiteOk;
+  }
+
   TF_LITE_ENSURE_EQ(context, op_context.input->bytes, op_context.output->bytes);
-  memcpy(op_context.output->data.raw, op_context.input->data.raw,
-         op_context.input->bytes);
+  // Only copy data if input and output do not share a buffer.
+  if (op_context.output->data.data != op_context.input->data.data) {
+    memcpy(op_context.output->data.data, op_context.input->data.data,
+           op_context.input->bytes);
+  }
   return kTfLiteOk;
 }
 

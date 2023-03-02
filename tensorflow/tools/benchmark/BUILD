@@ -9,11 +9,10 @@ load(
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 cc_library(
     name = "benchmark_model_lib",
@@ -28,8 +27,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = select({
         "//tensorflow:android": [
-            "//tensorflow/core:android_tensorflow_lib",
-            "//tensorflow/core:android_tensorflow_test_lib",
+            "//tensorflow/core:portable_tensorflow_lib",
+            "//tensorflow/core:portable_tensorflow_test_lib",
         ],
         "//conditions:default": [
             "//tensorflow/core:core_cpu",
@@ -62,7 +61,7 @@ tf_cc_test(
 
 # This binary may be built for either desktop or Android.
 # A typical Android build command will look like the following:
-# bazel build tensorflow/core:android_tensorflow_lib \
+# bazel build tensorflow/core:portable_tensorflow_lib \
 # --crosstool_top=//external:android/crosstool \
 # --cpu=armeabi-v7a \
 # --host_crosstool_top=@bazel_tools//tools/cpp:toolchain

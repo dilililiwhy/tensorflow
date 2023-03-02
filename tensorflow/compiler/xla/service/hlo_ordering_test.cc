@@ -18,16 +18,16 @@ limitations under the License.
 #include <memory>
 #include <string>
 
-#include "tensorflow/compiler/xla/service/hlo_computation.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_computation.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_opcode.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_schedule.h"
 #include "tensorflow/compiler/xla/service/hlo_dataflow_analysis.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
-#include "tensorflow/compiler/xla/service/hlo_opcode.h"
-#include "tensorflow/compiler/xla/service/hlo_schedule.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/tsl/lib/core/status_test_util.h"
 
 namespace xla {
 namespace {
@@ -280,12 +280,13 @@ TEST_F(HloOrderingTest, ValuesInWhileComputations) {
   // The live range of the while should be before the add.
   EXPECT_TRUE(ordering.IsDefinedBefore(dataflow->GetValueDefinedAt(xla_while),
                                        dataflow->GetValueDefinedAt(add)));
-  ASSERT_EQ(dataflow->GetValueDefinedAt(xla_while).uses().size(), 1);
+  ASSERT_EQ(dataflow->GetValueDefinedAt(xla_while).GetUses().size(), 1);
 
-  const HloUse& while_use = dataflow->GetValueDefinedAt(xla_while).uses()[0];
-  EXPECT_EQ(while_use.instruction, add);
-  EXPECT_TRUE(ordering.UseIsBeforeValueDefinition(
-      while_use, dataflow->GetValueDefinedAt(add), *dataflow));
+  const HloUse* while_use =
+      &dataflow->GetValueDefinedAt(xla_while).GetUses()[0];
+  EXPECT_EQ(while_use->instruction, add);
+  EXPECT_TRUE(ordering.UsesBeforeValueDefinition(
+      {&while_use, 1}, dataflow->GetValueDefinedAt(add), *dataflow));
   EXPECT_TRUE(ordering.LiveRangeStrictlyBefore(
       dataflow->GetValueDefinedAt(xla_while), dataflow->GetValueDefinedAt(add),
       *dataflow));
@@ -434,7 +435,7 @@ TEST_F(HloOrderingTest,
   TF_ASSERT_OK_AND_ASSIGN(auto dataflow,
                           HloDataflowAnalysis::Run(*module, /*ssa_form=*/true));
 
-  EXPECT_TRUE(ordering.ExecutesBefore(root, dead));
+  EXPECT_FALSE(ordering.ExecutesBefore(root, dead));
   EXPECT_FALSE(ordering.ExecutesBefore(dead, root));
 
   EXPECT_FALSE(ordering.LiveRangeStrictlyBefore(
@@ -490,7 +491,7 @@ TEST_F(HloOrderingTest,
   TF_ASSERT_OK_AND_ASSIGN(auto dataflow,
                           HloDataflowAnalysis::Run(*module, /*ssa_form=*/true));
 
-  EXPECT_TRUE(ordering.ExecutesBefore(root, dead));
+  EXPECT_FALSE(ordering.ExecutesBefore(root, dead));
   EXPECT_FALSE(ordering.ExecutesBefore(dead, root));
 
   EXPECT_FALSE(ordering.LiveRangeStrictlyBefore(
@@ -506,7 +507,7 @@ TEST_F(HloOrderingTest, InterferenceWithOuterRoot) {
   absl::string_view hlo_string = R"(
 HloModule InterferenceWithOuterRoot, is_scheduled=true
 
-Emmbedded (embedded_param: f32[4096,4096]) -> f32[4096,4096] {
+Embedded (embedded_param: f32[4096,4096]) -> f32[4096,4096] {
   embedded_param = f32[4096,4096]{1,0} parameter(0)
   multiply = f32[4096,4096]{1,0} multiply(embedded_param, embedded_param)
   ROOT log = f32[4096,4096]{1,0} log(multiply)
@@ -515,7 +516,7 @@ Emmbedded (embedded_param: f32[4096,4096]) -> f32[4096,4096] {
 ENTRY InterferenceWithOuterRoot {
   param = f32[4096,4096]{1,0} parameter(0)
   ROOT add = f32[4096,4096]{1,0} add(param, param)
-  call = f32[4096,4096]{1,0} call(param), to_apply=Emmbedded
+  call = f32[4096,4096]{1,0} call(param), to_apply=Embedded
 }
 
 )";
@@ -531,6 +532,108 @@ ENTRY InterferenceWithOuterRoot {
   EXPECT_TRUE(ordering.MayInterfere(dataflow->GetValueDefinedAt(multiply),
                                     dataflow->GetValueDefinedAt(add),
                                     *dataflow));
+}
+
+TEST_F(HloOrderingTest, RootNotLastInstruction) {
+  // This is a test for b/189219227. When the root instruction is scheduled not
+  // as the last instruction, it still lives out. If the only use of a value is
+  // this early root, we want HloOrdering to tell us that it actually doesn't
+  // execute before the operations that come after the root.
+  absl::string_view hlo_string = R"(
+HloModule module, is_scheduled=true
+
+body2 {
+  p_body2 = (f32[2]{0}) parameter(0)
+  p_body2.1 = f32[2]{0} get-tuple-element(p_body2), index=0
+  add.3 = f32[2]{0} add(p_body2.1, p_body2.1)
+  ROOT root2 = (f32[2]{0}) tuple(add.3)
+}
+
+condition2 {
+  p_cond2 = (f32[2]{0}) parameter(0)
+  ROOT result = pred[] constant(true)
+}
+
+body {
+  p_body = (f32[2]{0}) parameter(0)
+  p_body.1 = f32[2]{0} get-tuple-element(p_body), index=0
+  ROOT root = (f32[2]{0}) tuple(p_body.1)
+  copy = f32[2]{0} copy(p_body.1)
+  tuple = (f32[2]{0}) tuple(copy)
+  while.1 = (f32[2]{0}) while(tuple), condition=condition2, body=body2
+}
+
+condition {
+  p_cond = (f32[2]{0}) parameter(0)
+  ROOT result = pred[] constant(true)
+}
+
+ENTRY entry {
+  const0 = f32[2]{0} constant({1, 2})
+  while_init = (f32[2]{0}) tuple(const0)
+  ROOT while.0 = (f32[2]{0}) while(while_init), condition=condition, body=body
+}
+)";
+  HloModuleConfig hlo_config;
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string, hlo_config));
+  TF_ASSERT_OK_AND_ASSIGN(auto dataflow,
+                          HloDataflowAnalysis::Run(*module, /*ssa_form=*/true));
+  SequentialHloOrdering ordering(module->schedule());
+  auto root = FindInstruction(module.get(), "root");
+  auto p_body_2 = FindInstruction(module.get(), "p_body2");
+
+  auto tuple_use = HloUse{root, 0};
+  const HloValue& value = dataflow->GetUniqueValueAt(p_body_2, {0});
+  EXPECT_FALSE(
+      ordering.UsesBeforeValueDefinition({&tuple_use}, value, *dataflow));
+}
+
+TEST_F(HloOrderingTest, AsyncCallUses) {
+  absl::string_view hlo_string = R"(
+HloModule single_sc_async_call
+
+%called_computation {
+  %out_param = s32[1024]{0} parameter(1)
+  %input = s32[1024]{0} parameter(0)
+  %size = s32[] constant(256)
+  %index = s32[] custom-call(), custom_call_target="Baz"
+  %start = s32[] multiply(s32[] %size, s32[] %index)
+  %input2 = s32[256]{0} dynamic-slice(s32[1024]{0} %input, s32[] %start), dynamic_slice_sizes={256}
+  %output = s32[256]{0} add(s32[256]{0} %input2, s32[256]{0} %input2)
+  ROOT %output2 = s32[1024]{0} dynamic-update-slice(s32[1024]{0} %out_param, s32[256]{0} %output, s32[] %start)
+}, execution_thread="foobar"
+
+%async_wrapped {
+  %async_param = s32[1024]{0} parameter(0)
+  %async_param.1 = s32[1024]{0} parameter(1)
+  ROOT %call = s32[1024]{0} call(s32[1024]{0} %async_param, s32[1024]{0} %async_param.1), to_apply=%called_computation
+}, execution_thread="foobar"
+
+ENTRY %main {
+  %input.1 = s32[1024]{0} parameter(0)
+  %buf = s32[1024]{0} custom-call(), custom_call_target="AllocateBuffer"
+  %async-start = ((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) async-start(s32[1024]{0} %input.1, s32[1024]{0} %buf), async_group_id=0, async_execution_thread="foobar", calls=%async_wrapped
+  ROOT %async-done = s32[1024]{0} async-done(((s32[1024]{0}, s32[1024]{0}), s32[1024]{0}, u32[]) %async-start), async_group_id=0, async_execution_thread="foobar", calls=%async_wrapped
+}
+)";
+  HloModuleConfig hlo_config;
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string, hlo_config));
+  TF_ASSERT_OK_AND_ASSIGN(auto dataflow,
+                          HloDataflowAnalysis::Run(*module, /*ssa_form=*/true));
+  DependencyHloOrdering ordering(module.get());
+  auto async_start = FindInstruction(module.get(), "async-start");
+  auto async_done = FindInstruction(module.get(), "async-done");
+  auto call = FindInstruction(module.get(), "call");
+  auto output2 = FindInstruction(module.get(), "output2");
+
+  auto async_start_use = HloUse{async_start, 1};
+  auto async_done_use = HloUse{async_done, 0, {0, 1}};
+  auto call_use = HloUse{call, 1};
+  const HloValue& value = dataflow->GetUniqueValueAt(output2, {});
+  EXPECT_TRUE(ordering.UsesBeforeValueDefinition(
+      {&async_start_use, &call_use, &async_done_use}, value, *dataflow));
 }
 
 }  // namespace

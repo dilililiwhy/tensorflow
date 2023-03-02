@@ -2,8 +2,9 @@
 # TensorFlow Java examples.
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:private"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 java_binary(
@@ -26,5 +27,5 @@ filegroup(
             "**/*.class",
         ],
     ),
-    visibility = ["//tensorflow:__subpackages__"],
+    visibility = ["//visibility:private"],
 )

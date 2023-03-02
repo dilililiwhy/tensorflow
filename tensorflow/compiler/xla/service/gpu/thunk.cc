@@ -15,60 +15,99 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 
+#include <functional>
+#include <memory>
+#include <ostream>
+#include <string>
+
 namespace xla {
 namespace gpu {
 
-absl::string_view ThunkKindToString(Thunk::Kind kind) {
+Thunk::ExecuteParams::ExecuteParams(
+    const ServiceExecutableRunOptions& run_options,
+    const BufferAllocations& buffer_allocations, se::Stream* stream,
+    se::Stream* async_comms_stream)
+    : buffer_allocations(&buffer_allocations),
+      stream(stream),
+      async_comms_stream(async_comms_stream),
+      nccl_params(run_options, stream->parent()) {}
+
+/*static*/ absl::string_view Thunk::KindToString(Thunk::Kind kind) {
+#define CASE(x)  \
+  case Thunk::x: \
+    return #x
   switch (kind) {
-    case Thunk::kCholesky:
-      return "kCholesky";
-    case Thunk::kCollectivePermute:
-      return "kCollectivePermute";
-    case Thunk::kConditional:
-      return "kConditional";
-    case Thunk::kConvolution:
-      return "kConvolution";
-    case Thunk::kCopy:
-      return "kCopy";
-    case Thunk::kCudnnBatchNormBackward:
-      return "kCudnnBatchNormBackward";
-    case Thunk::kCudnnBatchNormForwardInference:
-      return "kCudnnBatchNormForwardInference";
-    case Thunk::kCudnnBatchNormForwardTraining:
-      return "kCudnnBatchNormForwardTraining";
-    case Thunk::kCustomCall:
-      return "kCustomCall";
-    case Thunk::kNcclAllReduce:
-      return "kNcclAllReduce";
-    case Thunk::kFft:
-      return "kFft";
-    case Thunk::kGemm:
-      return "kGemm";
-    case Thunk::kInfeed:
-      return "kInfeed";
-    case Thunk::kKernel:
-      return "kKernel";
-    case Thunk::kMemset32BitValue:
-      return "kMemset32BitValue";
-    case Thunk::kMemzero:
-      return "kMemzero";
-    case Thunk::kOutfeed:
-      return "kOutfeed";
-    case Thunk::kReplicaId:
-      return "kReplicaId";
-    case Thunk::kSequential:
-      return "kSequential";
-    case Thunk::kTriangularSolve:
-      return "kTriangularSolve";
-    case Thunk::kTuple:
-      return "kTuple";
-    case Thunk::kWhile:
-      return "kWhile";
+    CASE(kCholesky);
+    CASE(kConditional);
+    CASE(kConvolution);
+    CASE(kConvolutionReorder);
+    CASE(kCopy);
+    CASE(kCublasLtMatmul);
+    CASE(kCustomCall);
+    CASE(kNcclAllGather);
+    CASE(kNcclAllGatherStart);
+    CASE(kNcclAllGatherDone);
+    CASE(kNcclAllReduce);
+    CASE(kNcclAllReduceStart);
+    CASE(kNcclAllReduceDone);
+    CASE(kNcclCollectivePermute);
+    CASE(kNcclCollectivePermuteStart);
+    CASE(kNcclCollectivePermuteDone);
+    CASE(kNcclReduceScatter);
+    CASE(kNcclAllToAll);
+    CASE(kFft);
+    CASE(kFor);
+    CASE(kGemm);
+    CASE(kInfeed);
+    CASE(kKernel);
+    CASE(kMemset32BitValue);
+    CASE(kMemzero);
+    CASE(kOutfeed);
+    CASE(kReplicaId);
+    CASE(kPartitionId);
+    CASE(kSequential);
+    CASE(kTriangularSolve);
+    CASE(kWhile);
   }
 }
 
 std::ostream& operator<<(std::ostream& os, Thunk::Kind kind) {
-  return os << ThunkKindToString(kind);
+  return os << Thunk::KindToString(kind);
+}
+
+std::string ThunkSequence::ToString(
+    int indent,
+    std::function<std::string(const Thunk*)> get_thunk_annotation) const {
+  const std::string indent_str(indent * 2, ' ');
+  if (empty()) return indent_str + "No thunks.";
+
+  auto thunk_with_longest_kind = absl::c_max_element(
+      *this,
+      [](const std::unique_ptr<Thunk>& a, const std::unique_ptr<Thunk>& b) {
+        return Thunk::KindToString(a->kind()).length() <
+               Thunk::KindToString(b->kind()).length();
+      });
+  int64_t max_thunk_kind_len =
+      Thunk::KindToString(thunk_with_longest_kind->get()->kind()).length();
+  std::string result;
+  for (const std::unique_ptr<Thunk>& thunk : *this) {
+    // Write out the thunk kind, padded out to max_thunk_kind_len.
+    absl::string_view kind_str = Thunk::KindToString(thunk->kind());
+    absl::StrAppend(&result, indent_str, kind_str,
+                    std::string(max_thunk_kind_len - kind_str.length(), ' '),
+                    "\t");
+    if (get_thunk_annotation) {
+      absl::StrAppend(&result, get_thunk_annotation(thunk.get()));
+    }
+    absl::StrAppend(&result, thunk->ToStringExtra(indent));
+    absl::StrAppend(&result, "\n");
+  }
+  return result;
+}
+
+bool IsReductionCollective(Thunk::Kind kind) {
+  return kind == Thunk::kNcclAllReduce || kind == Thunk::kNcclAllReduceStart ||
+         kind == Thunk::kNcclReduceScatter;
 }
 
 }  // namespace gpu

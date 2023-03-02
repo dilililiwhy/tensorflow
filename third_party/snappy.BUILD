@@ -19,13 +19,17 @@ cc_library(
     ],
     hdrs = ["snappy.h"],
     copts = ["-DHAVE_CONFIG_H"] + select({
-        "@org_tensorflow//tensorflow:windows": [],
+        "@org_tensorflow//tensorflow/tsl:windows": [],
         "//conditions:default": [
             "-fno-exceptions",
             "-Wno-sign-compare",
             "-Wno-shift-negative-value",
             "-Wno-implicit-function-declaration",
         ],
+    }),
+    defines = select({
+        "@org_tensorflow//tensorflow/tsl:windows": [],
+        "//conditions:default": ["HAVE_SYS_UIO_H"],
     }),
 )
 

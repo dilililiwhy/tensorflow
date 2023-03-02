@@ -36,14 +36,18 @@ class ClusterFunctionLibraryRuntimeTest : public ::testing::Test {
     TF_CHECK_OK(spec.AddHostPortsJob("localhost", cluster_->targets()));
     ChannelCreationFunction channel_func =
         ConvertToChannelCreationFunction(NewHostPortGrpcChannel);
+    grpc_worker_env_.reset(CreateGrpcWorkerEnv());
+    std::shared_ptr<GrpcChannelCache> channel_cache(
+        NewGrpcChannelCache(spec, channel_func));
     std::unique_ptr<WorkerCacheInterface> worker_cache(
-        NewGrpcWorkerCache(std::shared_ptr<GrpcChannelCache>(
-            NewGrpcChannelCache(spec, channel_func))));
+        NewGrpcWorkerCache(channel_cache, grpc_worker_env_.get()));
 
     worker_session_.reset(new WorkerSession(
         "cluster_test_session", "/job:localhost/replica:0/task:0",
         std::move(worker_cache), std::unique_ptr<DeviceMgr>(),
-        std::unique_ptr<GraphMgr>(), nullptr));
+        std::unique_ptr<GraphMgr>(), nullptr,
+        [](WorkerSession* worker_session, bool called,
+           DeviceMgr* remote_device_mgr) { return nullptr; }));
 
     cluster_flr_.reset(new ClusterFunctionLibraryRuntime(worker_session_.get(),
                                                          true, nullptr));
@@ -103,13 +107,14 @@ class ClusterFunctionLibraryRuntimeTest : public ::testing::Test {
       *rets[i] = out[i];
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 
  protected:
   std::unique_ptr<test::TestCluster> cluster_;
   std::unique_ptr<WorkerSession> worker_session_;
   std::unique_ptr<ClusterFunctionLibraryRuntime> cluster_flr_;
+  std::unique_ptr<GrpcWorkerEnv> grpc_worker_env_;
 };
 
 TEST_F(ClusterFunctionLibraryRuntimeTest, ConstructFunctionGraph) {

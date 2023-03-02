@@ -13,7 +13,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/test_util.h"
+
+#include <stdint.h>
+
+#include <cstddef>
+#include <cstdlib>
+#include <initializer_list>
+#include <iostream>
+#include <memory>
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/util.h"
 
 namespace tflite {
 namespace {
@@ -41,11 +54,44 @@ TEST(TestUtilTest, QuantizeVectorScalingUp) {
   EXPECT_THAT(q_data, ElementsAreArray(expected));
 }
 
+TEST(DimsAreMatcherTestTensor, ValidOneD) {
+  auto t = std::make_unique<TfLiteTensor>();
+  t->dims = ConvertVectorToTfLiteIntArray({2});
+  EXPECT_THAT(t.get(), DimsAre({2}));
+  TfLiteIntArrayFree(t->dims);
+}
+
+TEST(DimsAreMatcherTestTensor, ValidTwoD) {
+  auto t = std::make_unique<TfLiteTensor>();
+  t->dims = ConvertVectorToTfLiteIntArray({2, 3});
+  EXPECT_THAT(t.get(), DimsAre({2, 3}));
+  TfLiteIntArrayFree(t->dims);
+}
+
+TEST(DimsAreMatcherTestTensor, ValidScalar) {
+  auto t = std::make_unique<TfLiteTensor>();
+  t->dims = ConvertVectorToTfLiteIntArray({});
+  EXPECT_THAT(t.get(), DimsAre({}));
+  TfLiteIntArrayFree(t->dims);
+}
+
+TEST(DimsAreMatcherTestArray, ValidOneD) {
+  auto* arr = ConvertVectorToTfLiteIntArray({2});
+  EXPECT_THAT(arr, DimsAre({2}));
+  TfLiteIntArrayFree(arr);
+}
+
+TEST(DimsAreMatcherTestArray, ValidTwoD) {
+  auto* arr = ConvertVectorToTfLiteIntArray({2, 3});
+  EXPECT_THAT(arr, DimsAre({2, 3}));
+  TfLiteIntArrayFree(arr);
+}
+
+TEST(DimsAreMatcherTestArray, ValidScalar) {
+  auto* arr = ConvertVectorToTfLiteIntArray({});
+  EXPECT_THAT(arr, DimsAre({}));
+  TfLiteIntArrayFree(arr);
+}
+
 }  // namespace
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

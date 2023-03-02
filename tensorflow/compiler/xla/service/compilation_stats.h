@@ -20,6 +20,7 @@ limitations under the License.
 #include <string>
 
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 
 namespace xla {
 
@@ -41,6 +42,11 @@ class CompilationStats {
   virtual void EndPass(absl::string_view pass_name) = 0;
 
   virtual void CompilationReport() = 0;
+
+  virtual int GetPassesSize() = 0;
+
+  virtual void RecordPassError(absl::string_view pass_name,
+                               absl::string_view err) = 0;
 };
 
 }  // namespace xla

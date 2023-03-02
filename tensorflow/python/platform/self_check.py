@@ -14,12 +14,10 @@
 # ==============================================================================
 
 """Platform-specific code for checking the integrity of the TensorFlow build."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import ctypes
 import os
 
+MSVCP_DLL_NAMES = "msvcp_dll_names"
 
 try:
   from tensorflow.python.platform import build_info
@@ -41,18 +39,26 @@ def preload_check():
     # Attempt to load any DLLs that the Python extension depends on before
     # we load the Python extension, so that we can raise an actionable error
     # message if they are not found.
-    import ctypes  # pylint: disable=g-import-not-at-top
-    if hasattr(build_info, "msvcp_dll_name"):
-      try:
-        ctypes.WinDLL(build_info.msvcp_dll_name)
-      except OSError:
+    if MSVCP_DLL_NAMES in build_info.build_info:
+      missing = []
+      for dll_name in build_info.build_info[MSVCP_DLL_NAMES].split(","):
+        try:
+          ctypes.WinDLL(dll_name)
+        except OSError:
+          missing.append(dll_name)
+      if missing:
         raise ImportError(
-            "Could not find %r. TensorFlow requires that this DLL be "
-            "installed in a directory that is named in your %%PATH%% "
-            "environment variable. You may install this DLL by downloading "
-            "Visual C++ 2015 Redistributable Update 3 from this URL: "
-            "https://www.microsoft.com/en-us/download/details.aspx?id=53587"
-            % build_info.msvcp_dll_name)
+            "Could not find the DLL(s) %r. TensorFlow requires that these DLLs "
+            "be installed in a directory that is named in your %%PATH%% "
+            "environment variable. You may install these DLLs by downloading "
+            '"Microsoft C++ Redistributable for Visual Studio 2015, 2017 and '
+            '2019" for your platform from this URL: '
+            "https://support.microsoft.com/help/2977003/the-latest-supported-visual-c-downloads"
+            % " or ".join(missing))
   else:
-    # TODO(mrry): Consider adding checks for the Linux and Mac OS X builds.
-    pass
+    # Load a library that performs CPU feature guard checking.  Doing this here
+    # as a preload check makes it more likely that we detect any CPU feature
+    # incompatibilities before we trigger them (which would typically result in
+    # SIGILL).
+    from tensorflow.python.platform import _pywrap_cpu_feature_guard
+    _pywrap_cpu_feature_guard.InfoAboutUnusedCPUFeatures()

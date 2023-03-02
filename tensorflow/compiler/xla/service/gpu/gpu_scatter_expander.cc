@@ -16,33 +16,20 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/gpu_scatter_expander.h"
 
 #include "absl/algorithm/container.h"
-#include "tensorflow/compiler/xla/service/hlo_computation.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
-#include "tensorflow/compiler/xla/service/hlo_module.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_computation.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
 #include "tensorflow/compiler/xla/statusor.h"
 
 namespace xla {
 
-StatusOr<bool> GpuScatterExpander::Run(HloModule* module) {
-  auto is_nontrivial_scatter = [](HloInstruction* inst) {
-    // TODO(b/129698548): Scattering elements larger than 64 bits is not
-    // supported by XLA:GPU.
-    return inst->opcode() == HloOpcode::kScatter &&
-           inst->shape().element_type() == C128;
-  };
-
-  std::vector<HloInstruction*> scatter_instrs;
-  for (HloComputation* computation : module->MakeNonfusionComputations()) {
-    absl::c_copy_if(computation->instructions(),
-                    std::back_inserter(scatter_instrs), is_nontrivial_scatter);
-  }
-
-  for (HloInstruction* inst : scatter_instrs) {
-    TF_ASSIGN_OR_RETURN(HloInstruction * expanded_root, ExpandScatter(inst));
-    TF_RETURN_IF_ERROR(inst->parent()->ReplaceInstruction(inst, expanded_root));
-  }
-
-  return !scatter_instrs.empty();
+bool GpuScatterExpander::InstructionMatchesPattern(HloInstruction* inst) {
+  // TODO(b/129698548): Scattering elements larger than 64 bits is not
+  // supported by XLA:GPU.
+  // TODO(b/227486631): Variadic scatter is not yet supported by GPU.
+  return inst->opcode() == HloOpcode::kScatter &&
+         (inst->shape().IsTuple() ||
+          primitive_util::BitWidth(inst->shape().element_type()) > 64);
 }
 
 }  // namespace xla

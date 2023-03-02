@@ -1,10 +1,9 @@
 load("//tensorflow:tensorflow.bzl", "py_test")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 filegroup(
     name = "all_files",
@@ -15,7 +14,7 @@ filegroup(
             "**/OWNERS",
         ],
     ),
-    visibility = ["//tensorflow:__subpackages__"],
+    visibility = ["//visibility:private"],
 )
 
 py_library(
@@ -24,7 +23,7 @@ py_library(
         "directives.py",
         "special_functions.py",
     ],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     visibility = ["//tensorflow:__subpackages__"],
     deps = [
         "//tensorflow/python/autograph/operators",
@@ -34,7 +33,8 @@ py_library(
 py_test(
     name = "special_functions_test",
     srcs = ["special_functions_test.py"],
-    srcs_version = "PY2AND3",
+    python_version = "PY3",
+    srcs_version = "PY3",
     deps = [
         ":lang",
         "//tensorflow/python:client_testlib",

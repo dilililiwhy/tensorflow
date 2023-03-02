@@ -15,6 +15,7 @@ limitations under the License.
 
 #include <iostream>
 #include <memory>
+#include <optional>
 
 #include "absl/strings/string_view.h"
 #include "llvm/Support/CommandLine.h"
@@ -24,8 +25,8 @@ limitations under the License.
 #include "llvm/Support/raw_ostream.h"
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/schema/schema_utils.h"
 
-using llvm::Optional;
 using llvm::cl::opt;
 
 // RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s.mlir -o - \
@@ -48,22 +49,22 @@ static opt<std::string> inputFileName(llvm::cl::Positional,
 
 namespace mlir {
 namespace {
-Optional<std::unique_ptr<tflite::ModelT>> InjectStatsToFullyConnected(
+std::optional<std::unique_ptr<tflite::ModelT>> InjectStatsToFullyConnected(
     llvm::StringRef buffer) {
   auto model_ptr = tflite::FlatBufferModel::VerifyAndBuildFromBuffer(
       buffer.data(), buffer.size());
   if (nullptr == model_ptr) {
-    return llvm::None;
+    return std::nullopt;
   }
   std::unique_ptr<tflite::ModelT> model(model_ptr->GetModel()->UnPack());
 
-  // FB-LABEL:     name: "Input",
+  // FB-LABEL:     name: "arg0",
   // FB-NEXT:      quantization: {
   // FB-NEXT:              min: [ -1.0 ],
   // FB-NEXT:              max: [ 1.0 ]
   // FB-NEXT:      }
 
-  // FB-LABEL:     name: "Input1",
+  // FB-LABEL:     name: "arg1",
   // FB-NEXT:            quantization: {
   // FB-EMPTY:
   // FB-NEXT:            }
@@ -88,7 +89,7 @@ Optional<std::unique_ptr<tflite::ModelT>> InjectStatsToFullyConnected(
   // FB-NEXT:      }
 
   // FB-LABEL:      operators: [ {
-  // FB-NEXT:             inputs: [ 1, 2, 0 ],
+  // FB-NEXT:             inputs: [ 0, 1, 2 ],
   // FB-NEXT:             outputs: [ 3, 4 ],
   // FB-NEXT:             builtin_options_type: FullyConnectedOptions,
   // FB-NEXT:             builtin_options: {
@@ -97,29 +98,26 @@ Optional<std::unique_ptr<tflite::ModelT>> InjectStatsToFullyConnected(
   // FB-NEXT:       } ],
 
   // CHECK-LABEL: func @main(%arg0: tensor<40x37xf32>, %arg1: tensor<40x37xf32>)
-  // CHECK-SAME:      -> tensor<40x40xf32> {
-  // CHECK-NEXT:    %[[in:.*]] = "tfl.pseudo_input"(%arg0) : (tensor<40x37xf32>)
-  // CHECK-SAME:      -> tensor<40x37xf32>
-  // CHECK-NEXT:    %[[stat:.*]] = "quant.stats"(%[[in]]) {layerStats = dense<
+  // CHECK-SAME:      -> tensor<40x40xf32>
+  // CHECK:         %[[stat:.*]] = "quantfork.stats"(%arg0) {layerStats = dense<
   // CHECK-SAME:      [-1.000000e+00, 1.000000e+00]> : tensor<2xf32>}
   // CHECK-SAME:      : (tensor<40x37xf32>) -> tensor<40x37xf32>
-  // CHECK-NEXT:    %[[in1:.*]] = "tfl.pseudo_input"(%arg1) :
-  // CHECK-SAME:      (tensor<40x37xf32>) -> tensor<40x37xf32>
   // CHECK-NEXT:    %[[cst:.*]] = "tfl.pseudo_const"() {value = dense<
   // CHECK-SAME:      1.000000e+00> : tensor<40xf32>} : () -> tensor<40xf32>
-  // CHECK-NEXT:    %[[fc:.*]]:2 = "tfl.fully_connected"(%[[stat]], %[[in1]],
-  // CHECK-NEXT:    %[[stat1:.*]] = "quant.stats"(%[[fc]]#0) {axis = 1 : i64,
+  // CHECK-NEXT:    %[[fc:.*]]:2 = "tfl.fully_connected"(%[[stat]], %arg1,
+  // CHECK-NEXT:    %[[stat1:.*]] = "quantfork.stats"(%[[fc]]#0)
+  // CHECK-SAME:    {axis = 1 : i64,
   // CHECK-SAME:      axisStats = dense<{{\[}}[-0.000000e+00, 0.000000e+00],
   // CHECK-SAME:      [-1.000000e+00, 1.000000e+00],
   // CHECK-SAME:      [-2.000000e+00, 2.000000e+00]
-  // CHECK-NEXT:    return %[[stat1]] :
-  // CHECK-SAME:      tensor<40x40xf32>
+  // CHECK-NEXT:    return %[[stat1]] : tensor<40x40xf32>
   // CHECK-NEXT:  }
 
   // Find the tensors and inject the min and max to the input and output
   for (auto& sub_graph : model->subgraphs) {
     for (auto& op : sub_graph->operators) {
-      if (model->operator_codes[op->opcode_index]->builtin_code ==
+      if (tflite::GetBuiltinCode(
+              model->operator_codes[op->opcode_index].get()) ==
           tflite::BuiltinOperator_FULLY_CONNECTED) {
         // inject min/max to the input and output tensors
         auto& input_tensor = sub_graph->tensors[op->inputs[0]];
@@ -158,12 +156,12 @@ int main(int argc, char** argv) {
   auto buffer = file_or_err->get();
   auto maybe_module =
       mlir::InjectStatsToFullyConnected(buffer->getBuffer().str());
-  if (!maybe_module.hasValue()) {
+  if (!maybe_module.has_value()) {
     return 1;
   }
   flatbuffers::FlatBufferBuilder builder;
   flatbuffers::Offset<tflite::Model> output_model_location =
-      tflite::Model::Pack(builder, maybe_module.getValue().get());
+      tflite::Model::Pack(builder, maybe_module.value().get());
   tflite::FinishModelBuffer(builder, output_model_location);
   std::string output_model_content(
       reinterpret_cast<const char*>(builder.GetBufferPointer()),

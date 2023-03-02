@@ -19,7 +19,12 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_XLA_COMPILE_ON_DEMAND_OP_H_
 #define TENSORFLOW_COMPILER_JIT_XLA_COMPILE_ON_DEMAND_OP_H_
 
+#include "tensorflow/compiler/jit/device_compilation_profiler.h"
+#include "tensorflow/compiler/jit/variable_info.h"
+#include "tensorflow/compiler/jit/variable_info_util.h"
 #include "tensorflow/compiler/jit/xla_device.h"
+#include "tensorflow/compiler/jit/xla_launch_util.h"
+#include "tensorflow/compiler/jit/xla_platform_info.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/xla/client/local_client.h"
 #include "tensorflow/core/framework/function.h"
@@ -34,23 +39,29 @@ namespace tensorflow {
 // vanilla TensorFlow op as long as the bridge supports it.
 class XlaCompileOnDemandOp : public OpKernel {
  public:
-  explicit XlaCompileOnDemandOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  explicit XlaCompileOnDemandOp(OpKernelConstruction* ctx)
+      : OpKernel(ctx),
+        platform_info_(XlaPlatformInfoFromDevice(ctx->device())) {}
   void Compute(OpKernelContext* ctx) override;
 
  private:
-  XlaCompiler::Argument CreateCompilerArgument(OpKernelContext* ctx, int64 i);
-  Status ShouldArgumentBeConstant(const OpKernel* op_kernel, int64 argument_idx,
-                                  FunctionLibraryRuntime* flib_runtime,
-                                  bool* result);
-  Status MustArgumentBeConstant(const OpKernel* op_kernel, int64 argument_idx,
-                                FunctionLibraryRuntime* flib_runtime,
-                                bool* result);
-  Status Compile(OpKernelContext* ctx, const XlaDevice::Metadata& metadata,
+  XlaCompiler::Argument CreateCompilerArgument(OpKernelContext* ctx, int64_t i);
+  Status Compile(OpKernelContext* ctx,
                  const XlaCompiler::CompilationResult** result,
+                 DeviceCompiler<xla::LocalExecutable, xla::LocalClient>**
+                     xla_device_compiler,
+                 DeviceCompilationProfiler** profiler,
+                 ResourceVarsSnapshot* variable_args,
                  xla::LocalExecutable** executable);
-  Status Run(OpKernelContext* ctx, const XlaDevice::Metadata& metadata,
+
+  Status Run(OpKernelContext* ctx,
+             DeviceCompiler<xla::LocalExecutable, xla::LocalClient>*
+                 xla_device_compiler,
              const XlaCompiler::CompilationResult* result,
-             xla::LocalExecutable* executable);
+             xla::LocalExecutable* executable,
+             const ResourceVarsSnapshot& variable_args);
+
+  const XlaPlatformInfo platform_info_;
 };
 
 }  // namespace tensorflow

@@ -20,25 +20,26 @@ limitations under the License.
 #include "grpcpp/completion_queue.h"
 #include "grpcpp/server_builder.h"
 #include "tensorflow/core/distributed_runtime/eager/eager_service_impl.h"
-#include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/eager/grpc_eager_service.h"
-#include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
+#include "tensorflow/tsl/distributed_runtime/rpc/async_service_interface.h"
+#include "tensorflow/tsl/distributed_runtime/rpc/grpc_call.h"
 
 namespace tensorflow {
 namespace eager {
 
 // This class is a wrapper that handles communication for gRPC.
-class GrpcEagerServiceImpl : public AsyncServiceInterface {
+class GrpcEagerServiceImpl : public tsl::AsyncServiceInterface {
  public:
   template <class RequestMessage, class ResponseMessage>
-  using EagerCall = Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
-                         RequestMessage, ResponseMessage>;
+  using EagerCall =
+      tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
+                RequestMessage, ResponseMessage>;
   template <class RequestMessage, class ResponseMessage>
   using StreamingCall =
-      ServerBidirectionalStreamingCall<GrpcEagerServiceImpl,
-                                       grpc::EagerService::AsyncService,
-                                       RequestMessage, ResponseMessage>;
+      tsl::ServerBidirectionalStreamingCall<GrpcEagerServiceImpl,
+                                            grpc::EagerService::AsyncService,
+                                            RequestMessage, ResponseMessage>;
 
   GrpcEagerServiceImpl(const WorkerEnv* env,
                        ::grpc::ServerBuilder* server_builder);
@@ -58,19 +59,55 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
       call->SendResponse(                                                     \
           ToGrpcStatus(local_impl_.method(&call->request, &call->response))); \
     });                                                                       \
-    Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,              \
-         method##Request, method##Response>::                                 \
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,         \
+              method##Request, method##Response>::                            \
         EnqueueRequest(&service_, cq_.get(),                                  \
                        &grpc::EagerService::AsyncService::Request##method,    \
                        &GrpcEagerServiceImpl::method##Handler, false);        \
   }
   HANDLER(CreateContext);
   HANDLER(UpdateContext);
-  HANDLER(Enqueue);
   HANDLER(WaitQueueDone);
   HANDLER(KeepAlive);
   HANDLER(CloseContext);
 #undef HANDLER
+
+  void EnqueueHandler(EagerCall<EnqueueRequest, EnqueueResponse>* call) {
+    env_->compute_pool->Schedule([this, call]() {
+      auto call_opts = std::make_shared<CallOptions>();
+      call->SetCancelCallback([call_opts]() { call_opts->StartCancel(); });
+      call->SendResponse(ToGrpcStatus(local_impl_.Enqueue(
+          call_opts.get(), &call->request, &call->response)));
+    });
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
+              EnqueueRequest, EnqueueResponse>::
+        EnqueueRequest(&service_, cq_.get(),
+                       &grpc::EagerService::AsyncService::RequestEnqueue,
+                       &GrpcEagerServiceImpl::EnqueueHandler,
+                       /*supports_cancel=*/true);
+  }
+
+  void RunComponentFunctionHandler(
+      EagerCall<RunComponentFunctionRequest, RunComponentFunctionResponse>*
+          call) {
+    env_->compute_pool->Schedule([this, call]() {
+      auto call_opts = std::make_shared<CallOptions>();
+      call->SetCancelCallback([call_opts]() { call_opts->StartCancel(); });
+      local_impl_.RunComponentFunction(call_opts.get(), &call->request,
+                                       &call->response,
+                                       [call, call_opts](const Status& s) {
+                                         call->ClearCancelCallback();
+                                         call->SendResponse(ToGrpcStatus(s));
+                                       });
+    });
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
+              RunComponentFunctionRequest, RunComponentFunctionResponse>::
+        EnqueueRequest(
+            &service_, cq_.get(),
+            &grpc::EagerService::AsyncService::RequestRunComponentFunction,
+            &GrpcEagerServiceImpl::RunComponentFunctionHandler,
+            /*supports_cancel=*/true);
+  }
 
   // Called when a new request has been received as part of a StreamingEnqueue
   // call.
@@ -94,7 +131,7 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
       // reuse the same StreamingCall for multiple requests in the same
       // streaming connection.
       Status status = local_impl_.Enqueue(
-          &call->request(), call->mutable_response(),
+          /*call_opts=*/nullptr, &call->request(), call->mutable_response(),
           reinterpret_cast<uint64>(static_cast<void*>(call)));
 
       if (status.ok()) {

@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/generic_transfer_manager.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,11 +24,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
+#include "tensorflow/tsl/platform/errors.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 
@@ -52,46 +53,63 @@ Status GenericTransferManager::WriteSingleTupleIndexTable(
   TF_RETURN_IF_ERROR(TransferBufferToDevice(
       stream, GetByteSizeRequirement(shape), element_pointers->data(), region));
   // Ensure the buffer is transferred before we destroy element_pointers.
-  stream->ThenRunAfterNextBlockHostUntilDone([element_pointers]() {
+  stream->ThenDoHostCallback([element_pointers{std::move(element_pointers)}]() {
     /* holds reference to element_pointers in closure */
   });
-  return Status::OK();
+  return OkStatus();
 }
 
 void GenericTransferManager::TransferLiteralFromDevice(
     se::Stream* stream, const ShapedBuffer& device_buffer,
     MutableBorrowingLiteral literal, std::function<void(Status)> done,
-    const TransferMetadata* /*transfer_metadata*/) {
+    const TransferMetadata* transfer_metadata) {
   VLOG(2) << "transferring literal from device ordinal "
           << stream->parent()->device_ordinal()
           << "; device buffer: " << device_buffer;
+
   Status status = [&]() -> Status {
     TF_RET_CHECK(stream->parent()->device_ordinal() ==
                  device_buffer.device_ordinal());
 
-    // The on-host and on-device shape should always be the same for the generic
-    // transfer manager.
-    TF_RET_CHECK(ShapeUtil::Equal(device_buffer.on_device_shape(),
-                                  device_buffer.on_host_shape()));
-
     TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
-        device_buffer.on_host_shape(),
+        device_buffer.on_device_shape(),
         [&](const Shape& subshape, const ShapeIndex& index) -> Status {
           if (subshape.IsArray()) {
-            stream->ThenMemcpy(
-                /*host_dst=*/literal.untyped_data(index),
-                /*gpu_src=*/device_buffer.buffer(index),
-                /*size=*/GetByteSizeRequirement(subshape));
+            TF_RETURN_IF_ERROR(TransferBufferFromDevice(
+                stream,
+                /*source=*/device_buffer.buffer(index),
+                // With bounded dynamic shapes, the shape of the device buffer
+                // (bounded allocation) can be bigger than the literal.
+                /*size=*/
+                GetByteSizeRequirement(
+                    ShapeUtil::GetSubshape(literal.shape(), index)),
+                /*destination=*/literal.untyped_data(index)));
           }
-          return Status::OK();
+          return OkStatus();
         }));
-    return Status::OK();
+    return OkStatus();
   }();
+
   if (!status.ok()) {
     done(status);
     return;
   }
-  done(stream->BlockHostUntilDone());
+
+  // CUDA callbacks are tricky as we cannot call any CUDA driver functions from
+  // within a host callback. As a result, `TransferLiteralFromDevice` must be
+  // very conservative, and is synchronous by default. However, if the user
+  // declares, via the metadata, that their callback is safe to call from a host
+  // callback, we enqueue it and return immediately.
+  if ((transfer_metadata != nullptr) &&
+      tensorflow::down_cast<const LiteralFromDeviceMetadata*>(transfer_metadata)
+          ->callback_is_host_callback_safe) {
+    stream->ThenDoHostCallback([done = std::move(done), stream] {
+      done(stream->ok() ? OkStatus()
+                        : InternalError("`TransferLiteralFromDevice` failed"));
+    });
+  } else {
+    done(stream->BlockHostUntilDone());
+  }
 }
 
 Status GenericTransferManager::TransferLiteralToDeviceAsync(
@@ -103,49 +121,37 @@ Status GenericTransferManager::TransferLiteralToDeviceAsync(
           << ShapeUtil::HumanString(shape)
           << "; device buffer: " << device_buffer;
 
-  // The on-host and on-device shape should always be the same for the generic
-  // transfer manager.
-  TF_RET_CHECK(ShapeUtil::Equal(device_buffer.on_device_shape(),
-                                device_buffer.on_host_shape()));
-
   TF_RET_CHECK(
-      ShapeUtil::Compatible(literal.shape(), device_buffer.on_host_shape()));
+      ShapeUtil::Compatible(literal.shape(), device_buffer.on_device_shape()));
   TF_RET_CHECK(stream->parent()->device_ordinal() ==
                device_buffer.device_ordinal());
 
   TF_RETURN_IF_ERROR(WriteTupleIndexTablesAsync(stream, device_buffer));
 
   return ShapeUtil::ForEachSubshapeWithStatus(
-      device_buffer.on_host_shape(),
+      device_buffer.on_device_shape(),
       [&](const Shape& device_subshape, const ShapeIndex& index) -> Status {
-        se::DeviceMemoryBase device_memory = device_buffer.buffer(index);
         if (device_subshape.IsArray()) {
-          TF_RET_CHECK(GetByteSizeRequirement(device_subshape) ==
-                       device_memory.size());
-          // Element is array-shaped: transfer array data to device buffer.
-          const auto subliteral = LiteralSlice(literal, index);
-          Literal relayed_out_literal;
-          const void* source;
-          if (LayoutUtil::Equal(device_subshape.layout(),
-                                subliteral.shape().layout())) {
-            source = subliteral.untyped_data();
-            return TransferBufferToDevice(
-                stream,
-                /*size=*/GetByteSizeRequirement(device_subshape), source,
-                &device_memory);
+          int64_t size = GetByteSizeRequirement(device_subshape);
+          se::DeviceMemoryBase device_memory = device_buffer.buffer(index);
+          TF_RET_CHECK(size == device_memory.size());
+          LiteralSlice subliteral(literal, index);
+          if (device_subshape.layout() == subliteral.shape().layout()) {
+            return TransferBufferToDevice(stream, size,
+                                          /*source=*/subliteral.untyped_data(),
+                                          /*destination=*/&device_memory);
           } else {
             // Relayout data before transferring.
-            relayed_out_literal = subliteral.Relayout(device_subshape.layout(),
-                                                      /*shape_index=*/{});
-            source = relayed_out_literal.untyped_data();
+            auto relaid_out = std::make_shared<Literal>(
+                subliteral.Relayout(device_subshape.layout()));
             TF_RETURN_IF_ERROR(TransferBufferToDevice(
-                stream,
-                /*size=*/GetByteSizeRequirement(device_subshape), source,
-                &device_memory));
-            return stream->BlockHostUntilDone();
+                stream, size, /*source=*/relaid_out->untyped_data(),
+                /*destination=*/&device_memory));
+            // Ensure the buffer is transferred before we destroy it.
+            stream->ThenDoHostCallback([keep_alive = std::move(relaid_out)] {});
           }
         }
-        return Status::OK();
+        return OkStatus();
       });
 }
 
@@ -155,8 +161,7 @@ Status GenericTransferManager::TransferLiteralToInfeed(
 }
 
 Status GenericTransferManager::TransferLiteralFromOutfeed(
-    se::StreamExecutor* executor, const Shape& literal_shape,
-    MutableBorrowingLiteral literal) {
+    se::StreamExecutor* executor, MutableBorrowingLiteral literal) {
   return Unimplemented("Generic transfer from Outfeed");
 }
 
@@ -167,8 +172,13 @@ Status GenericTransferManager::ResetDevices(
       "Device reset is not yet supported on this platform (b/30481585)");
 }
 
-int64 GenericTransferManager::GetByteSizeRequirement(const Shape& shape) const {
-  return ShapeUtil::ByteSizeOf(shape, pointer_size_);
+int64_t GenericTransferManager::GetByteSizeRequirement(
+    const Shape& shape) const {
+  if (shape.is_static() || shape.IsTuple()) {
+    return ShapeUtil::ByteSizeOf(shape, pointer_size_);
+  }
+  int64_t metadata_size = sizeof(int32_t) * shape.dimensions_size();
+  return ShapeUtil::ByteSizeOf(shape, pointer_size_) + metadata_size;
 }
 
 }  // namespace xla

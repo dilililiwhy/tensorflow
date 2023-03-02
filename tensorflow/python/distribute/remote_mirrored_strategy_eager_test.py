@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for MirroredStrategy."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.distribute import combinations
 from tensorflow.python.distribute import mirrored_strategy
 from tensorflow.python.distribute import multi_worker_test_base
@@ -30,7 +26,7 @@ def get_gpus():
   gpus = context.context().list_logical_devices("GPU")
   actual_gpus = []
   for gpu in gpus:
-    if "localhost" not in gpu.name:
+    if "job" in gpu.name:
       actual_gpus.append(gpu.name)
   return actual_gpus
 

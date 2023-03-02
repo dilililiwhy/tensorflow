@@ -14,14 +14,10 @@
 # ==============================================================================
 """Tests for tf.cond in XLA."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.client import session
 from tensorflow.python.compiler.xla import xla
-from tensorflow.python.eager import function
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
@@ -44,7 +40,7 @@ class CondTest(xla_test.XLATestCase):
       xla_context = control_flow_ops.XLAControlFlowContext()
       xla_context.Enter()
 
-      @function.defun
+      @def_function.function
       def f():
         ta = tensor_array_ops.TensorArray(dtype=dtypes.float32, size=1)
         output = control_flow_ops.cond(
@@ -64,7 +60,7 @@ class CondTest(xla_test.XLATestCase):
       xla_context = control_flow_ops.XLAControlFlowContext()
       xla_context.Enter()
 
-      @function.defun
+      @def_function.function
       def f():
         ta = tensor_array_ops.TensorArray(dtype=dtypes.float32, size=1)
         output = control_flow_ops.cond(
@@ -175,8 +171,8 @@ class CondTest(xla_test.XLATestCase):
       output = control_flow_ops.cond(
           constant_op.constant(True), if_true, if_false)
 
-      with self.assertRaisesRegexp(errors.InvalidArgumentError,
-                                   "must be a compile-time constant"):
+      with self.assertRaisesRegex(errors.InvalidArgumentError,
+                                  "must be a compile-time constant"):
         sess.run(
             output, feed_dict={
                 x: [0., 1., 2.],
@@ -209,8 +205,8 @@ class CondTest(xla_test.XLATestCase):
 
       output = xla.compile(f)
 
-      with self.assertRaisesRegexp(errors.InvalidArgumentError,
-                                   "must be a compile-time constant"):
+      with self.assertRaisesRegex(errors.InvalidArgumentError,
+                                  "must be a compile-time constant"):
         sess.run(
             output, feed_dict={
                 x: [0., 1., 2.],
@@ -224,7 +220,7 @@ class CondTest(xla_test.XLATestCase):
       xla_context = control_flow_ops.XLAControlFlowContext()
       xla_context.Enter()
 
-      @function.defun
+      @def_function.function
       def f():
         ta = tensor_array_ops.TensorArray(dtype=dtypes.float32, size=1)
         output = control_flow_ops.switch_case(

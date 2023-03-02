@@ -28,6 +28,8 @@ toolchain(
     name = "py_toolchain",
     toolchain = ":py_runtime_pair",
     toolchain_type = "@bazel_tools//tools/python:toolchain_type",
+    target_compatible_with = [%{PLATFORM_CONSTRAINT}],
+    exec_compatible_with = [%{PLATFORM_CONSTRAINT}],
 )
 
 # To build Python C/C++ extension on Windows, we need to link to python import library pythonXY.lib
@@ -50,6 +52,15 @@ cc_library(
         "//conditions:default": [],
     }),
     includes = ["python_include"],
+)
+
+# This alias is exists for the use of targets in the @llvm-project dependency,
+# which expect a python_headers target called @python_runtime//:headers. We use
+# a repo_mapping to alias python_runtime to this package, and an alias to create
+# the correct target.
+alias(
+    name = "headers",
+    actual = ":python_headers",
 )
 
 cc_library(

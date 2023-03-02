@@ -16,9 +16,10 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_EXECUTABLE_RUN_OPTIONS_H_
 #define TENSORFLOW_COMPILER_XLA_EXECUTABLE_RUN_OPTIONS_H_
 
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
-
-#include "tensorflow/compiler/xla/types.h"
 
 // These classes are forward declared so that ExecutableRunOptions can be linked
 // into an XLA-compiled binary without having to link all of the pointed-to
@@ -26,18 +27,36 @@ limitations under the License.
 // need to be linked).
 namespace stream_executor {
 class Stream;
+class Event;
 class Platform;
 class DeviceMemoryAllocator;
+class DeviceMemoryBase;
 }  // namespace stream_executor
 
 namespace Eigen {
 struct ThreadPoolDevice;
 }  // namespace Eigen
 
+namespace tsl {
+class Status;
+template <typename T>
+class StatusOr;
+template <typename T>
+class AsyncValueRef;
+}  // namespace tsl
+
 namespace xla {
+
+using ::tsl::Status;    // TENSORFLOW_STATUS_OK
+using ::tsl::StatusOr;  // TENSORFLOW_STATUS_OK
 
 class DeviceAssignment;
 class ExecutionProfile;
+class Shape;
+
+namespace gpu {
+class GpuExecutableRunOptions;
+}  // namespace gpu
 
 // A unique identifier for a particular "logical execution" of an XLA model.
 //
@@ -49,11 +68,13 @@ class RunId {
  public:
   // Creates a new, unique RunId.
   RunId();
+  explicit RunId(int64_t value) : data_(value) {}
 
   RunId(const RunId&) = default;
   RunId& operator=(const RunId&) = default;
   friend bool operator==(const RunId& a, const RunId& b);
   std::string ToString() const;
+  int64_t ToInt() const;
 
   template <typename H>
   friend H AbslHashValue(H h, const RunId& id) {
@@ -61,8 +82,33 @@ class RunId {
   }
 
  private:
-  int64 data_;
+  int64_t data_;
 };
+
+// Callback used by the GPU backend only. This is an "one-sided" version of
+// ThenDoHostCallback that enqueues a callback onto a stream. The difference
+// with ThenDoHostCallback is that the device does not block waiting for the
+// callback to complete; instead the callback is scheduled by the runtime.
+// This functionality must be provided by the caller, and hence is provided in
+// callback form.
+using ThenExecuteFunction =
+    std::function<void(stream_executor::Stream*, std::function<void()>)>;
+
+// Callback for sending device buffer to a channel. Returned event will be
+// recorded on a `stream` once the send operation is completed and data was
+// copied from the `src` memory.
+using SendDeviceMemoryFunction =
+    std::function<StatusOr<tsl::AsyncValueRef<stream_executor::Event>>(
+        int64_t channel_id, stream_executor::Stream* stream, const Shape& shape,
+        const stream_executor::DeviceMemoryBase& src)>;
+
+// Callback for receiving device buffer from a channel. Returned event will be
+// recorded on a `stream` once the recv operation is completed and data was
+// copied into the `dst` memory.
+using RecvDeviceMemoryFunction =
+    std::function<StatusOr<tsl::AsyncValueRef<stream_executor::Event>>(
+        int64_t channel_id, stream_executor::Stream* stream, const Shape& shape,
+        stream_executor::DeviceMemoryBase* dst)>;
 
 // Class containing options for running a LocalExecutable.
 class ExecutableRunOptions {
@@ -86,12 +132,20 @@ class ExecutableRunOptions {
   ExecutableRunOptions& set_stream(stream_executor::Stream* stream);
   stream_executor::Stream* stream() const;
 
-  // If set, this is the stream to perform any pre-computation transfers on.
-  // The platform of the stream must match the platform the executable was
-  // built for.  A value of nullptr indicates the option has not been set.
+  // If set, this is the stream to perform host to device transfers on (e.g. any
+  // pre-computation transfers). The platform of the stream must match the
+  // platform the executable was built for. A value of nullptr indicates the
+  // option has not been set.
   ExecutableRunOptions& set_host_to_device_stream(
       stream_executor::Stream* stream);
   stream_executor::Stream* host_to_device_stream() const;
+
+  // If set, this is the stream to perform device to host transfers on.
+  // The platform of the stream must match the platform the executable was
+  // built for. A value of nullptr indicates the option has not been set.
+  ExecutableRunOptions& set_device_to_host_stream(
+      stream_executor::Stream* stream);
+  stream_executor::Stream* device_to_host_stream() const;
 
   // Sets the thread pool device on which to run Eigen subcomputations.
   //
@@ -116,8 +170,50 @@ class ExecutableRunOptions {
   ExecutableRunOptions& set_rng_seed(int rng_seed);
   int rng_seed() const;
 
+  ExecutableRunOptions& set_launch_id(int32_t launch_id) {
+    launch_id_ = launch_id;
+    return *this;
+  }
+
+  int32_t launch_id() const { return launch_id_; }
+
   ExecutableRunOptions& set_run_id(RunId id);
   RunId run_id() const;
+
+  // See documentation on ThenExecuteFunction.
+  ExecutableRunOptions& set_then_execute_function(ThenExecuteFunction* f) {
+    then_execute_function_ = f;
+    return *this;
+  }
+  ThenExecuteFunction* then_execute_function() const {
+    return then_execute_function_;
+  }
+
+  // See documentation on SendDeviceMemoryFunction.
+  ExecutableRunOptions& set_send_device_memory_function(
+      SendDeviceMemoryFunction* f) {
+    send_device_memory_function_ = f;
+    return *this;
+  }
+  SendDeviceMemoryFunction* send_device_memory_function() const {
+    return send_device_memory_function_;
+  }
+
+  // See documentation on RecvDeviceMemoryFunction.
+  ExecutableRunOptions& set_recv_device_memory_function(
+      RecvDeviceMemoryFunction* f) {
+    recv_device_memory_function_ = f;
+    return *this;
+  }
+  RecvDeviceMemoryFunction* recv_device_memory_function() const {
+    return recv_device_memory_function_;
+  }
+
+  // GPU-backend specific options. These are kept out-of-line to avoid bloating
+  // the size of this dependency for CPU-only AOT builds.
+  ExecutableRunOptions& set_gpu_executable_run_options(
+      const gpu::GpuExecutableRunOptions* gpu_executable_run_options);
+  const gpu::GpuExecutableRunOptions* gpu_executable_run_options() const;
 
  private:
   stream_executor::DeviceMemoryAllocator* allocator_ = nullptr;
@@ -127,8 +223,14 @@ class ExecutableRunOptions {
   const Eigen::ThreadPoolDevice* intra_op_thread_pool_ = nullptr;
   ExecutionProfile* execution_profile_ = nullptr;
   int rng_seed_ = 0;
+  int32_t launch_id_ = 0;
+  stream_executor::Stream* device_to_host_stream_ = nullptr;
   stream_executor::Stream* host_to_device_stream_ = nullptr;
+  ThenExecuteFunction* then_execute_function_ = nullptr;
+  SendDeviceMemoryFunction* send_device_memory_function_ = nullptr;
+  RecvDeviceMemoryFunction* recv_device_memory_function_ = nullptr;
   RunId run_id_;
+  const gpu::GpuExecutableRunOptions* gpu_executable_run_options_ = nullptr;
 };
 
 }  // namespace xla

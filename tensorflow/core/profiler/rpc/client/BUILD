@@ -1,66 +1,102 @@
-load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_cuda_library")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+load("//tensorflow:tensorflow.default.bzl", "tf_grpc_cc_dependencies")
+load(
+    "//tensorflow/core/profiler/builds:build_config.bzl",
+    "tf_profiler_copts",
+    "tf_profiler_pybind_cc_library_wrapper",
+)
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
-tf_cuda_library(
+cc_library(
     name = "capture_profile",
-    srcs = [
-        "capture_profile.cc",
+    hdrs = ["capture_profile.h"],
+    copts = tf_profiler_copts(),
+    visibility = [
+        "//tensorflow/compiler/xla/python:__pkg__",
+        "//tensorflow/python/profiler/internal:__pkg__",
     ],
-    hdrs = [
-        "capture_profile.h",
-    ],
-    visibility = ["//visibility:public"],
     deps = [
-        ":dump_tpu_profile",
-        "//tensorflow:grpc++",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:grpc_services",
         "//tensorflow/core:lib",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_util",
-        "//tensorflow/core/profiler:protos_all_cc",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
+        "//tensorflow/tsl/profiler/protobuf:profiler_options_proto_cc",
+        "//tensorflow/tsl/profiler/protobuf:profiler_service_proto_cc",
+        "//tensorflow/tsl/profiler/rpc/client:capture_profile",
+    ],
+)
+
+cc_library(
+    name = "save_profile",
+    hdrs = ["save_profile.h"],
+    copts = tf_profiler_copts(),
+    visibility = ["//tensorflow/core/profiler:internal"],
+    deps = [
+        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
+        "//tensorflow/tsl/profiler/protobuf:profiler_service_proto_cc",
+        "//tensorflow/tsl/profiler/rpc/client:save_profile",
+    ],
+)
+
+tf_profiler_pybind_cc_library_wrapper(
+    name = "profiler_client_for_pybind",
+    actual = ":profiler_client",
+)
+
+cc_library(
+    name = "profiler_client",
+    hdrs = ["profiler_client.h"],
+    visibility = ["//tensorflow/compiler/xla:__subpackages__"],
+    deps = [
+        ":profiler_client_impl",
+        "//tensorflow/core:lib",
+        "//tensorflow/tsl/profiler/protobuf:profiler_analysis_cc_grpc_proto",
+        "//tensorflow/tsl/profiler/protobuf:profiler_service_cc_grpc_proto",
+        "//tensorflow/tsl/profiler/rpc/client:profiler_client",
+        "//tensorflow/tsl/profiler/rpc/client:profiler_client_impl",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
     ],
+)
+
+# Linked to pywrap_tensorflow to avoid ODR violation due to tf_grpc_cc_dependencies().
+cc_library(
+    name = "profiler_client_impl",
+    srcs = [
+        "profiler_client.h",
+    ],
+    copts = tf_profiler_copts(),
+    visibility = [
+        "//tensorflow:__pkg__",
+        "//tensorflow/python:__pkg__",
+    ],
+    deps = [
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/tsl/profiler/protobuf:profiler_analysis_cc_grpc_proto",
+        "//tensorflow/tsl/profiler/protobuf:profiler_service_cc_grpc_proto",
+        "//tensorflow/tsl/profiler/rpc/client:profiler_client",
+        "//tensorflow/tsl/profiler/rpc/client:profiler_client_impl",
+    ] + tf_grpc_cc_dependencies(),
+    alwayslink = True,
 )
 
 cc_library(
-    name = "dump_tpu_profile",
-    srcs = ["dump_tpu_profile.cc"],
-    hdrs = ["dump_tpu_profile.h"],
-    visibility = ["//visibility:public"],
+    name = "remote_profiler_session_manager",
+    hdrs = ["remote_profiler_session_manager.h"],
+    copts = tf_profiler_copts(),
     deps = [
-        ":trace_events_to_json",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:grpc_services",
+        ":profiler_client_for_pybind",
         "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core/profiler:op_profile_proto_cc",
-    ],
-)
-
-cc_library(
-    name = "trace_events_to_json",
-    srcs = ["trace_events_to_json.cc"],
-    hdrs = ["trace_events_to_json.h"],
-    deps = [
-        "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "@jsoncpp_git//:jsoncpp",
-    ],
-)
-
-tf_cc_test(
-    name = "trace_events_to_json_test",
-    srcs = ["trace_events_to_json_test.cc"],
-    deps = [
-        ":trace_events_to_json",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
-        "//tensorflow/core/profiler:protos_all_cc",
-        "@jsoncpp_git//:jsoncpp",
+        "//tensorflow/tsl/profiler/rpc/client:remote_profiler_session_manager",
+        "@com_google_absl//absl/strings",
     ],
 )

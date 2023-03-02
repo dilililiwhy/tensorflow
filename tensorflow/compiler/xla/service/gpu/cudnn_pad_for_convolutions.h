@@ -16,9 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SERVICE_GPU_CUDNN_PAD_FOR_CONVOLUTIONS_H_
 #define TENSORFLOW_COMPILER_XLA_SERVICE_GPU_CUDNN_PAD_FOR_CONVOLUTIONS_H_
 
+#include "tensorflow/compiler/xla/hlo/ir/hlo_casting_utils.h"
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
-#include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_pass_interface.h"
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/compiler/xla/window_util.h"
@@ -31,16 +31,20 @@ namespace gpu {
 // add slice instruction to remove unnecessary output features.
 class CudnnPadForConvolutions : public HloModulePass {
  public:
-  explicit CudnnPadForConvolutions(bool is_volta_or_later)
-      : is_volta_or_later_(is_volta_or_later) {}
+  explicit CudnnPadForConvolutions(se::CudaComputeCapability compute_capability)
+      : compute_capability_(compute_capability) {}
+
   absl::string_view name() const override {
     return "cudnn_pad_for_convolutions";
   }
   // Run PadForConvolutions on the given module and return if any change is made
-  StatusOr<bool> Run(HloModule* module) override;
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
-  const bool is_volta_or_later_;
+  const se::CudaComputeCapability compute_capability_;
 };
 
 }  // namespace gpu

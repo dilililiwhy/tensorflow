@@ -19,27 +19,129 @@ limitations under the License.
 #include <cstddef>
 #include <memory>
 #include <string>
-#include <unordered_map>
+#include <string_view>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/types/span.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
+#include "tensorflow/compiler/xla/runtime/executable.h"
+#include "tensorflow/compiler/xla/runtime/ffi.h"
+#include "tensorflow/compiler/xla/runtime/jit_executable.h"
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
 #include "tensorflow/compiler/xla/service/cpu/simple_orc_jit.h"
+#include "tensorflow/compiler/xla/service/cpu/xla_framework.h"
+#include "tensorflow/compiler/xla/service/custom_call_status_internal.h"
 #include "tensorflow/compiler/xla/service/executable.h"
 #include "tensorflow/compiler/xla/service/hlo_dataflow_analysis.h"
 #include "tensorflow/compiler/xla/service/hlo_execution_profile.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
-#include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 #include "tensorflow/compiler/xla/statusor.h"
+#include "tensorflow/compiler/xla/stream_executor/device_memory_allocator.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/core/platform/types.h"
-#include "tensorflow/stream_executor/device_memory_allocator.h"
 
 namespace xla {
 namespace cpu {
+
+// BufferDesc for passing raw `buffer` (i.e. void ptr + size) arguments.
+class BufferDesc {
+ public:
+  BufferDesc(void* data, size_t size) : data_(data), size_(size) {}
+  void* data() const { return data_; }
+  size_t size() const { return size_; }
+
+ private:
+  void* data_;
+  size_t size_;
+};
+
+class XlaRuntimeCpuExecutable {
+  using FfiModulesState = ::xla::runtime::ffi::FfiModulesState;
+
+ public:
+  explicit XlaRuntimeCpuExecutable(
+      std::unique_ptr<runtime::JitExecutable> jit_executable,
+      const XlaFrameworkMapping& xla_framework_mapping,
+      FfiModulesState ffi_modules_state)
+      : executable_(std::move(jit_executable)),
+        xla_framework_mapping_(xla_framework_mapping),
+        ffi_modules_state_(std::move(ffi_modules_state)) {
+    runtime::ffi::ExportFfiModules(dynamic_custom_calls_);
+  }
+
+  explicit XlaRuntimeCpuExecutable(
+      std::unique_ptr<runtime::Executable> executable,
+      const XlaFrameworkMapping& xla_framework_mapping,
+      FfiModulesState ffi_modules_state)
+      : executable_(std::move(executable)),
+        xla_framework_mapping_(xla_framework_mapping),
+        ffi_modules_state_(std::move(ffi_modules_state)) {
+    runtime::ffi::ExportFfiModules(dynamic_custom_calls_);
+  }
+
+  Status Execute(const std::vector<BufferDesc>& descriptor_table,
+                 const ExecutableRunOptions* run_options);
+
+  runtime::Executable& GetExecutable() {
+    if (std::holds_alternative<std::unique_ptr<runtime::JitExecutable>>(
+            executable_)) {
+      runtime::JitExecutable* jit_executable =
+          std::get<std::unique_ptr<runtime::JitExecutable>>(executable_).get();
+      return *jit_executable->DefaultExecutable();
+    } else {
+      runtime::Executable* aot_executable =
+          std::get<std::unique_ptr<runtime::Executable>>(executable_).get();
+      return *aot_executable;
+    }
+  }
+
+  StatusOr<std::string_view> GetObjFile() const {
+    if (!std::holds_alternative<std::unique_ptr<runtime::JitExecutable>>(
+            executable_)) {
+      return InternalError("No JitExecutable");
+    }
+
+    runtime::JitExecutable* jit_executable =
+        std::get<std::unique_ptr<runtime::JitExecutable>>(executable_).get();
+    std::unique_ptr<llvm::MemoryBuffer> obj_file =
+        jit_executable->DefaultExecutable()->obj_file();
+    if (!obj_file)
+      return InternalError("XlaRuntimeCpuExecutable didn't save the obj file");
+
+    return std::string_view(obj_file->getBuffer());
+  }
+
+  StatusOr<std::string_view> GetMlirModule() const {
+    if (!std::holds_alternative<std::unique_ptr<runtime::JitExecutable>>(
+            executable_)) {
+      return InternalError("No JitExecutable");
+    }
+
+    runtime::JitExecutable* jit_executable =
+        std::get<std::unique_ptr<runtime::JitExecutable>>(executable_).get();
+    return jit_executable->mlir_module();
+  }
+
+  XlaFrameworkMapping xla_framework_mapping() { return xla_framework_mapping_; }
+
+ private:
+  // In JIT compilation mode `JitExecutable` is used. In AOT compilation mode
+  // `Executable` is used.
+  std::variant<std::unique_ptr<runtime::JitExecutable>,
+               std::unique_ptr<runtime::Executable>>
+      executable_;
+
+  XlaFrameworkMapping xla_framework_mapping_;
+
+  // Keeps an executable state for all registered FFI modules.
+  FfiModulesState ffi_modules_state_;
+
+  // Dynamic custom calls exported from XLA runtime modules (and FFI modules).
+  runtime::DynamicCustomCallRegistry dynamic_custom_calls_;
+};
 
 // CPU-targeting implementation of the XLA Executable interface.
 //
@@ -50,36 +152,84 @@ class CpuExecutable : public Executable {
   CpuExecutable(std::unique_ptr<SimpleOrcJIT> jit,
                 std::unique_ptr<const BufferAssignment> assignment,
                 std::unique_ptr<HloModule> hlo_module,
-                const string& entry_function_name,
+                const std::string& entry_function_name,
                 std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data,
                 std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map);
-  ~CpuExecutable() override {}
+  // XLA Runtime constructor.
+  CpuExecutable(
+      std::unique_ptr<HloModule> hlo_module,
+      std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data,
+      std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map,
+      std::unique_ptr<const BufferAssignment> assignment,
+      std::unique_ptr<XlaRuntimeCpuExecutable> xla_runtime_executable);
 
-  StatusOr<ScopedShapedBuffer> ExecuteAsyncOnStream(
+  ~CpuExecutable() override;
+
+  bool IsXlaRuntime() const { return xla_runtime_executable_ != nullptr; }
+
+  Status ExecuteXlaRuntime(const std::vector<BufferDesc>& descriptor_table,
+                           const ExecutableRunOptions* run_options = nullptr) {
+    return xla_runtime_executable_->Execute(descriptor_table, run_options);
+  }
+
+  StatusOr<ExecutionOutput> ExecuteAsyncOnStream(
       const ServiceExecutableRunOptions* run_options,
-      absl::Span<const ShapedBuffer* const> arguments,
+      std::vector<ExecutionInput> arguments,
       HloExecutionProfile* hlo_execution_profile) override;
 
-  // This should be called after set_ir_module_string.
-  const string& ir_module_string() const { return ir_module_string_; }
+  // Calls the generated function performing the computation with the given
+  // arguments using the supplied buffers.
+  Status ExecuteComputeFunction(
+      const ExecutableRunOptions* run_options,
+      absl::Span<MaybeOwningDeviceMemory const> buffers,
+      HloExecutionProfile* hlo_execution_profile);
 
-  void set_ir_module_string(const string& ir_module_string) {
+  // Returns an Executable that is loaded from an object file (XLA program
+  // compiled to a native function using the XLA Runtime stack).
+  static StatusOr<std::unique_ptr<Executable>> LoadFromObjFile(
+      std::unique_ptr<HloModule> hlo_module, absl::string_view obj_file,
+      absl::string_view mlir_module,
+      std::unique_ptr<BufferAssignment> buffer_assignment,
+      XlaFrameworkMapping xla_framework_mapping,
+      runtime::JitExecutable::Options opts);
+
+  // This should be called after set_ir_module_string.
+  const std::string& ir_module_string() const { return ir_module_string_; }
+
+  void set_ir_module_string(const std::string& ir_module_string) {
     ir_module_string_ = ir_module_string;
   }
 
-  static int64 ShapeSizeBytes(const Shape& shape);
+  static int64_t ShapeSizeBytes(const Shape& shape);
 
   // Type of the computation function we expect in the JIT.
   using ComputeFunctionType =
       void (*)(void* /*result*/, const ExecutableRunOptions* /*run_options*/,
                const void** /*args*/, void** /*buffer_table*/,
-               int64* /*profile_counters*/);
+               XlaCustomCallStatus* /*status*/, int64_t* /*profile_counters*/);
 
   const ComputeFunctionType& compute_function() const {
     return compute_function_;
   }
 
   const BufferAssignment& buffer_assignment() const { return *assignment_; }
+
+  int64_t SizeOfGeneratedCodeInBytes() const override;
+
+  StatusOr<std::string_view> GetObjFile() const {
+    if (!IsXlaRuntime()) return InternalError("Not an XLA Runtime executable");
+    return xla_runtime_executable_->GetObjFile();
+  }
+
+  StatusOr<std::string_view> GetMlirModule() const {
+    if (!IsXlaRuntime()) return InternalError("Not an XLA Runtime executable");
+    return xla_runtime_executable_->GetMlirModule();
+  }
+
+  StatusOr<XlaFrameworkMapping> GetXlaFrameworkMapping() const {
+    if (!IsXlaRuntime()) return InternalError("Not an XLA Runtime executable");
+    return xla_runtime_executable_->xla_framework_mapping();
+  }
 
  private:
   // Creates an array suitable for passing as the "buffer_table" argument to the
@@ -96,24 +246,21 @@ class CpuExecutable : public Executable {
   //    allocated by this routine.  This routine allocates buffers for temporary
   //    storage and the live-out buffer into which the computation writes it
   //    result.
-  StatusOr<std::pair<std::vector<se::DeviceMemoryBase>,
-                     std::vector<se::OwningDeviceMemory>>>
-  CreateBufferTable(se::DeviceMemoryAllocator* memory_allocator,
-                    int device_ordinal,
-                    absl::Span<const ShapedBuffer* const> arguments);
+  //
+  //  - buffers_to_free: buffers whose ownership was donated by the caller that
+  //    are to be freed by the caller.
+  StatusOr<std::vector<MaybeOwningDeviceMemory>> CreateBufferTable(
+      se::DeviceMemoryAllocator* memory_allocator, int device_ordinal,
+      absl::Span<ExecutionInput const> arguments);
 
-  // Calls the generated function performing the computation with the given
-  // arguments using the supplied buffers.
-  Status ExecuteComputeFunction(const ExecutableRunOptions* run_options,
-                                absl::Span<const se::DeviceMemoryBase> buffers,
-                                HloExecutionProfile* hlo_execution_profile);
-
-  // Creates a ScopedShapedBuffer for holding the result of the computation,
-  // moving buffers out of allocated_buffers and into the result as appropriate.
-  // The addresses are set according to buffer assignment.
-  StatusOr<ScopedShapedBuffer> CreateResultShapedBuffer(
+  // Creates an Execution output holding ScopedShapedBuffer for holding the
+  // result of the computation, moving buffers out of allocated_buffers and into
+  // the result as appropriate.  The addresses are set according to buffer
+  // assignment.
+  StatusOr<ExecutionOutput> CreateResultShapedBuffer(
       const ServiceExecutableRunOptions* run_options,
-      absl::Span<se::OwningDeviceMemory> buffers);
+      absl::Span<MaybeOwningDeviceMemory> buffers,
+      absl::Span<ExecutionInput> arguments);
 
   // Returns the instruction value set of the root instruction of the entry
   // computation. Uses dataflow analysis from buffer assignment.
@@ -125,18 +272,27 @@ class CpuExecutable : public Executable {
   // Buffer assignment for the buffers we need to allocate.
   const std::unique_ptr<const BufferAssignment> assignment_;
 
+  std::shared_ptr<const BufferAssignmentProto> buffer_assignment_;
+
   // The LLVM IR, in string format, of the unoptimized module generated for this
   // CpuExecutable. We save a string instead of an llvm::Module* because leaving
   // llvm::Module* in a singleton can cause the heap checker to emit false
   // positives.
-  string ir_module_string_;
+  std::string ir_module_string_;
+
+  // Unique identifier.
+  std::string module_name_;
 
   ComputeFunctionType compute_function_;
 
   // Entry function name for the computation.
-  const string entry_function_name_;
+  const std::string entry_function_name_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(CpuExecutable);
+  // If not null, XLA Runtime is enabled.
+  std::unique_ptr<XlaRuntimeCpuExecutable> xla_runtime_executable_;
+
+  CpuExecutable(const CpuExecutable&) = delete;
+  CpuExecutable& operator=(const CpuExecutable&) = delete;
 };
 
 }  // namespace cpu

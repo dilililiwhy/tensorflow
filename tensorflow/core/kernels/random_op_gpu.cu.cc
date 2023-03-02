@@ -41,6 +41,8 @@ typedef Eigen::GpuDevice GPUDevice;
 template struct FillPhiloxRandom<
     GPUDevice, random::UniformDistribution<random::PhiloxRandom, Eigen::half> >;
 template struct FillPhiloxRandom<
+    GPUDevice, random::UniformDistribution<random::PhiloxRandom, Eigen::bfloat16> >;
+template struct FillPhiloxRandom<
     GPUDevice, random::UniformDistribution<random::PhiloxRandom, float> >;
 template struct FillPhiloxRandom<
     GPUDevice, random::UniformDistribution<random::PhiloxRandom, double> >;
@@ -49,7 +51,21 @@ template struct FillPhiloxRandom<
 template struct FillPhiloxRandom<
     GPUDevice, random::UniformDistribution<random::PhiloxRandom, int64> >;
 template struct FillPhiloxRandom<
+    GPUDevice,
+    random::UniformFullIntDistribution<random::PhiloxRandom, int32> >;
+template struct FillPhiloxRandom<
+    GPUDevice,
+    random::UniformFullIntDistribution<random::PhiloxRandom, int64> >;
+template struct FillPhiloxRandom<
+    GPUDevice,
+    random::UniformFullIntDistribution<random::PhiloxRandom, uint32> >;
+template struct FillPhiloxRandom<
+    GPUDevice,
+    random::UniformFullIntDistribution<random::PhiloxRandom, uint64> >;
+template struct FillPhiloxRandom<
     GPUDevice, random::NormalDistribution<random::PhiloxRandom, Eigen::half> >;
+template struct FillPhiloxRandom<
+    GPUDevice, random::NormalDistribution<random::PhiloxRandom, Eigen::bfloat16> >;
 template struct FillPhiloxRandom<
     GPUDevice, random::NormalDistribution<random::PhiloxRandom, float> >;
 template struct FillPhiloxRandom<
@@ -57,6 +73,9 @@ template struct FillPhiloxRandom<
 template struct FillPhiloxRandom<
     GPUDevice, random::TruncatedNormalDistribution<
         random::SingleSampleAdapter<random::PhiloxRandom>, Eigen::half> >;
+template struct FillPhiloxRandom<
+    GPUDevice, random::TruncatedNormalDistribution<
+        random::SingleSampleAdapter<random::PhiloxRandom>, Eigen::bfloat16> >;
 template struct FillPhiloxRandom<
     GPUDevice, random::TruncatedNormalDistribution<
                    random::SingleSampleAdapter<random::PhiloxRandom>, float> >;
